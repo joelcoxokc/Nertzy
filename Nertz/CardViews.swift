@@ -42,43 +42,21 @@ struct CardView: View {
     }
 
     private var faceContent: some View {
-        ZStack {
-            cornerIndex
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(.top, width * 0.045)
-                .padding(.leading, width * 0.075)
-            cornerIndex
-                .rotationEffect(.degrees(180))
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                .padding(.bottom, width * 0.045)
-                .padding(.trailing, width * 0.075)
-            centerPip
+        VStack(spacing: 0) {
+            // Top half: the rank, big — hugs the top edge so it stays
+            // readable when cards fan out in a work pile.
+            Text(card.rankLabel)
+                .font(.system(size: width * 0.54, weight: .heavy, design: .rounded))
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .padding(.top, width * 0.05)
+            // Bottom half: the suit, big.
+            Text(card.suit.symbol)
+                .font(.system(size: width * 0.50))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .foregroundStyle(ink)
-    }
-
-    private var cornerIndex: some View {
-        VStack(spacing: -width * 0.03) {
-            Text(card.rankLabel)
-                .font(.system(size: width * 0.27, weight: .bold, design: .rounded))
-            Text(card.suit.symbol)
-                .font(.system(size: width * 0.19))
-        }
-    }
-
-    @ViewBuilder
-    private var centerPip: some View {
-        if card.rank > 10 {
-            VStack(spacing: -width * 0.04) {
-                Text(card.rankLabel)
-                    .font(.system(size: width * 0.44, weight: .heavy, design: .serif))
-                Text(card.suit.symbol)
-                    .font(.system(size: width * 0.24))
-            }
-        } else {
-            Text(card.suit.symbol)
-                .font(.system(size: width * 0.52))
-        }
     }
 
     // MARK: Back
