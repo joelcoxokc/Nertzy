@@ -168,16 +168,10 @@ struct TableView: View {
                 ))
             }
         }
-        // Foundations — top two cards per pile, hiding any card still in flight.
+        // Foundations — top two cards per pile.
         // Completed piles flip face down, shrink, and leave the table.
-        let flyingIDs = Set(engine.flying.map(\.id))
         for (idx, pile) in engine.foundations.enumerated() {
-            let visible: [Card]
-            if pile.faceDown {
-                visible = Array(pile.cards.suffix(1))
-            } else {
-                visible = Array(pile.cards.filter { !flyingIDs.contains($0.id) }.suffix(2))
-            }
+            let visible = Array(pile.cards.suffix(pile.faceDown ? 1 : 2))
             for (k, c) in visible.enumerated() {
                 out.append(RC(
                     id: c.id, card: c, pos: layout.foundationSlot(idx),
@@ -189,17 +183,21 @@ struct TableView: View {
                 ))
             }
         }
-        // Opponent cards flying in from their seats
+        // Opponent cards racing in from their seats. A claim aims at its
+        // pile (or the ghost slot for a fresh ace) and flies home if beaten.
         for f in engine.flying {
-            let slotIdx = engine.foundations.firstIndex(where: { $0.id == f.pileID })
+            let slotIdx = f.pileID.flatMap { pid in
+                engine.foundations.firstIndex(where: { $0.id == pid })
+            } ?? engine.foundations.count
+            let atSeat = !f.landed || f.bouncing
             out.append(RC(
                 id: f.id, card: f.card,
-                pos: f.landed && slotIdx != nil
-                    ? layout.foundationSlot(slotIdx!)
-                    : layout.seatPos(f.fromSeat).offsetBy(0, 18),
+                pos: atSeat
+                    ? layout.seatPos(f.fromSeat).offsetBy(0, 18)
+                    : layout.foundationSlot(slotIdx),
                 z: 6000, faceUp: true,
-                w: f.landed ? layout.fCardW : layout.fCardW * 0.8,
-                rot: f.landed ? tossAngle(for: f.card) : 0,
+                w: atSeat ? layout.fCardW * 0.8 : layout.fCardW,
+                rot: atSeat ? 0 : tossAngle(for: f.card),
                 flight: true,
                 shadowed: true
             ))

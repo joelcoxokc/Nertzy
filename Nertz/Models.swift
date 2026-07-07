@@ -190,11 +190,17 @@ struct RoundSummary {
     let winner: Int?                // set when the match is over (someone reached 100)
 }
 
+/// An opponent's card in the air. It owns nothing until it lands: the pile
+/// only updates on touchdown, and if the spot was taken first, the card
+/// bounces home. First card DOWN wins, like at a real table.
 struct FlyingCard: Identifiable {
     let card: Card
     let fromSeat: Int               // player index 1+
-    let pileID: Int
+    let source: MoveSource          // where it came from, for bounce-backs
+    let pileID: Int?                // nil = starting a new pile
+    var resolveAt: Date             // when the race is decided; pause-shifted
     var landed = false
+    var bouncing = false            // lost the race, flying home
 
     var id: String { card.id }
 }
