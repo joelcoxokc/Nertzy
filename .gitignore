@@ -10,3 +10,6 @@ DerivedData/
 xcuserdata/
 *.xcuserstate
 *.xcuserdatad
+
+# Store assets stay local
+screenshots/

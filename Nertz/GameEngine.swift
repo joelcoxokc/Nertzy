@@ -23,6 +23,8 @@ final class GameEngine {
     var paused = false
     /// Debug: deal opponents a 2-card nerts pile so rounds end fast (-quickround).
     var debugTinyNerts = false
+    /// Debug: the AI also plays your seat — living screenshots/demos (-demo).
+    var debugDemo = false
 
     /// One-level undo of your last move.
     struct UndoSnapshot {
@@ -93,7 +95,7 @@ final class GameEngine {
 
     private func runDeal() async {
         // Opponents set up instantly (their tables aren't visible).
-        let aiNertsCount = debugTinyNerts ? 2 : 13
+        let aiNertsCount = debugTinyNerts ? (debugDemo ? 4 : 2) : 13
         for p in 1..<playerCount {
             var b = boards[p]
             for _ in 0..<aiNertsCount { b.nerts.append(b.stock.removeLast()) }
@@ -101,12 +103,14 @@ final class GameEngine {
             boards[p] = b
         }
         // Your cards are dealt one at a time off the stock.
+        let myNertsCount = (debugTinyNerts && debugDemo) ? 4 : 13
         try? await Task.sleep(for: .milliseconds(400))
-        for _ in 0..<13 {
+        for _ in 0..<myNertsCount {
             guard !Task.isCancelled else { return }
             var b = boards[0]
             b.nerts.append(b.stock.removeLast())
             boards[0] = b
+            Sound.play(.deal)
             try? await Task.sleep(for: .milliseconds(45))
         }
         for i in 0..<4 {
@@ -114,12 +118,13 @@ final class GameEngine {
             var b = boards[0]
             b.work[i].append(b.stock.removeLast())
             boards[0] = b
+            Sound.play(.deal)
             try? await Task.sleep(for: .milliseconds(80))
         }
         guard !Task.isCancelled else { return }
         dealing = false
         let now = Date()
-        for p in 1..<playerCount {
+        for p in (debugDemo ? 0 : 1)..<playerCount {
             aiNextMove[p] = now.addingTimeInterval(sampleInterval() * 1.3)
         }
         lastFoundationPlay = now
@@ -200,7 +205,7 @@ final class GameEngine {
         let now = Date()
         let params = settings.difficulty.params
 
-        for p in 1..<playerCount {
+        for p in (debugDemo ? 0 : 1)..<playerCount {
             if boards[p].nerts.isEmpty {
                 if aiCallAt[p] == nil {
                     aiCallAt[p] = now.addingTimeInterval(Double.random(in: params.callDelay, using: &rng))
@@ -355,6 +360,7 @@ final class GameEngine {
             self.flying.removeAll { $0.id == card.id }
             guard self.phase == .playing else { return }
             self.pulses.append(LandingPulse(id: pulseID, pileIndex: pileIndex, owner: seat))
+            Sound.play(.opponent)
             try? await Task.sleep(for: .milliseconds(650))
             self.pulses.removeAll { $0.id == pulseID }
         }
@@ -389,6 +395,7 @@ final class GameEngine {
         flipStock(0)
         undo = UndoSnapshot(board: snapshot, foundationEffect: nil)
         Haptics.flip()
+        Sound.play(.flip)
     }
 
     func handleTap(on card: Card) {
@@ -412,6 +419,7 @@ final class GameEngine {
             if applyMove(0, source: source, target: target) {
                 recordUndo(snapshot: snapshot, target: target, movedCardID: card.id)
                 Haptics.score()
+                Sound.play(.score)
                 return
             }
         }
@@ -471,9 +479,11 @@ final class GameEngine {
         switch target {
         case .foundation:
             Haptics.score()
+            Sound.play(.score)
             return .foundation
         case .work:
             Haptics.place()
+            Sound.play(.place)
             return .work
         }
     }
@@ -511,6 +521,7 @@ final class GameEngine {
         boards[0] = u.board
         undo = nil
         Haptics.place()
+        Sound.play(.place)
     }
 
     func canDrop(_ unit: [Card], on target: DropTarget) -> Bool {

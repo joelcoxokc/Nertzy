@@ -33,6 +33,7 @@ struct TableView: View {
         .overlay { roundEndOverlay }
         .onAppear {
             Haptics.prepare()
+            Sound.start()
             UIApplication.shared.isIdleTimerDisabled = true
         }
         .onDisappear {
@@ -393,14 +394,14 @@ struct TableView: View {
         .disabled(!engine.canUndo)
         .opacity(engine.canUndo ? 1 : 0.35)
         .animation(.easeInOut(duration: 0.2), value: engine.canUndo)
-        .position(x: 36, y: layout.bottomRowY)
+        .position(x: layout.wastePos(depth: 1).x, y: layout.bottomRowY - layout.cardH / 2 - 32)
         .zIndex(9350)
 
         // The big red button
         if engine.nertsReady {
             let leftEdge = layout.wastePos(depth: 2).x - layout.cardW / 2
             NertsButton { engine.callNerts() }
-                .position(x: (68 + leftEdge) / 2, y: layout.bottomRowY)
+                .position(x: (12 + leftEdge) / 2, y: layout.bottomRowY)
                 .zIndex(9400)
                 .transition(.scale(scale: 0.6).combined(with: .opacity))
         }
