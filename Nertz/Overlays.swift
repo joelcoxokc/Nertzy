@@ -1,5 +1,109 @@
 import SwiftUI
 
+struct PauseOverlay: View {
+    let engine: GameEngine
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.6).ignoresSafeArea()
+
+            VStack(spacing: 14) {
+                Image(systemName: "pause.circle.fill")
+                    .font(.system(size: 42))
+                    .foregroundStyle(.white.opacity(0.9))
+                Text("PAUSED")
+                    .font(.system(size: 32, weight: .black, design: .rounded))
+                    .tracking(3)
+                    .foregroundStyle(.white)
+                    .padding(.bottom, 6)
+
+                Button {
+                    engine.setPaused(false)
+                } label: {
+                    Text("RESUME")
+                        .font(.system(size: 18, weight: .black, design: .rounded))
+                        .tracking(1.5)
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(
+                            Capsule().fill(LinearGradient(
+                                colors: [Color(hex: 0x35C963), Color(hex: 0x1E9B47)],
+                                startPoint: .top, endPoint: .bottom
+                            ))
+                        )
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    engine.tableShuffle()
+                    engine.setPaused(false)
+                } label: {
+                    VStack(spacing: 3) {
+                        Text("TABLE SHUFFLE  🔀")
+                            .font(.system(size: 15, weight: .heavy, design: .rounded))
+                            .tracking(1)
+                            .foregroundStyle(.white)
+                        Text("Stuck? Everyone re-forms their stock and moves\nthe top card to the bottom.")
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.6))
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(.white.opacity(0.10))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .strokeBorder(.white.opacity(0.15), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+
+                HStack(spacing: 10) {
+                    Button {
+                        engine.newMatch()
+                    } label: {
+                        smallPill("NEW MATCH")
+                    }
+                    .buttonStyle(.plain)
+                    Button {
+                        engine.quitToMenu()
+                    } label: {
+                        smallPill("QUIT")
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.top, 4)
+            }
+            .padding(26)
+            .frame(maxWidth: 340)
+            .background(
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .fill(Color(hex: 0x0E2417).opacity(0.97))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+            )
+            .padding(.horizontal, 30)
+        }
+    }
+
+    private func smallPill(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 13, weight: .heavy, design: .rounded))
+            .tracking(1)
+            .foregroundStyle(.white.opacity(0.8))
+            .padding(.horizontal, 18)
+            .padding(.vertical, 9)
+            .background(Capsule().fill(.white.opacity(0.08)))
+            .overlay(Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 1))
+    }
+}
+
 struct ScoreboardOverlay: View {
     let engine: GameEngine
     let summary: RoundSummary
