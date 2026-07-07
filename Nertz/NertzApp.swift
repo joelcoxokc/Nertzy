@@ -30,6 +30,7 @@ struct RootView: View {
             let args = ProcessInfo.processInfo.arguments
             if args.contains("-autostart") {
                 engine.debugTinyNerts = args.contains("-quickround")
+                engine.debugDemo = args.contains("-demo")
                 engine.settings = GameSettings(
                     opponents: 2,
                     difficulty: args.contains("-frantic") ? .frantic : .classic
