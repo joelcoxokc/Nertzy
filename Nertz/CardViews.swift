@@ -46,7 +46,7 @@ struct CardView: View {
             // Top half: the rank, big — hugs the top edge so it stays
             // readable when cards fan out in a work pile.
             Text(card.rankLabel)
-                .font(.system(size: width * 0.54, weight: .heavy, design: .rounded))
+                .font(.system(size: width * 0.54, weight: .black))
                 .lineLimit(1)
                 .minimumScaleFactor(0.65)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)

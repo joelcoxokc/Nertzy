@@ -97,7 +97,7 @@ struct TableLayout {
             let d = abs(workBase(i).x - p.x)
             if d < (best?.dist ?? .infinity) { best = (i, d) }
         }
-        guard let best, best.dist < (cardW + colGap) * 0.55 else { return nil }
+        guard let best, best.dist < (cardW + colGap) * 0.75 else { return nil }
         return best.index
     }
 }

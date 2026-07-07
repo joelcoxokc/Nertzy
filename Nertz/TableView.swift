@@ -287,13 +287,45 @@ struct TableView: View {
     private func currentTarget(_ layout: TableLayout) -> DropTarget? {
         guard let d = drag, let lead = d.unit.first, let base = d.bases[lead.id] else { return nil }
         let point = base.adding(d.translation)
-        // Anywhere on the table zone counts — the card finds its own pile
-        // (aces start a new one), no precision aiming required.
-        if d.unit.count == 1, layout.foundationZone.contains(point) {
-            return engine.foundationTarget(for: lead)
+
+        // Released next to where it was picked up = putting it back.
+        guard point.distance(to: base) > layout.cardW * 0.75 else { return nil }
+
+        // The table zone, grown by a full card in every direction (but kept
+        // clear of the work row) — the card finds its own pile.
+        if d.unit.count == 1 {
+            var zone = layout.foundationZone.insetBy(dx: -layout.cardW, dy: 0)
+            zone.origin.y -= layout.cardW * 0.9
+            zone.size.height += layout.cardW * 0.9
+            let maxY = layout.workTopY - layout.cardH / 2 - 8
+            zone.size.height = min(zone.size.height + layout.cardW * 0.9, maxY - zone.origin.y)
+            if zone.contains(point) {
+                return engine.foundationTarget(for: lead)
+            }
         }
+        // Work pile by geometry, with a wide catch.
         if let wi = layout.workIndex(at: point) {
             return .work(wi)
+        }
+        // Snap-assist: you clearly moved it — send it to the nearest legal
+        // home within about two cards of the release point.
+        var best: (target: DropTarget, dist: CGFloat)?
+        if d.unit.count == 1, let ft = engine.foundationTarget(for: lead),
+           case .foundation(let idx) = ft {
+            let slot = idx ?? engine.foundations.count
+            let dist = layout.foundationSlot(slot).distance(to: point)
+            if dist < (best?.dist ?? .infinity) { best = (ft, dist) }
+        }
+        for w in 0..<4 where engine.canDrop(d.unit, on: .work(w)) {
+            let count = engine.boards.first?.work[w].count ?? 0
+            let landing = layout.workCardPos(pile: w, index: count, count: count + 1)
+            let dist = landing.distance(to: point)
+            if dist < (best?.dist ?? .infinity) { best = (.work(w), dist) }
+        }
+        // Must be closer to the new home than to where it came from, so a
+        // small fumble near the origin still cancels.
+        if let best, best.dist < min(layout.cardW * 2.2, point.distance(to: base)) {
+            return best.target
         }
         return nil
     }
