@@ -17,7 +17,13 @@ struct TableView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let layout = TableLayout(size: geo.size, playerCount: engine.playerCount)
+            // On iPad, play in a centered column instead of stretching the
+            // table across the whole screen.
+            let tableWidth = min(geo.size.width, 700)
+            let layout = TableLayout(
+                size: CGSize(width: tableWidth, height: geo.size.height),
+                playerCount: engine.playerCount
+            )
             ZStack {
                 tableChrome(layout)
                 seats(layout)
@@ -27,6 +33,8 @@ struct TableView: View {
                 hudLayer(layout)
             }
             .coordinateSpace(name: "table")
+            .frame(width: tableWidth, height: geo.size.height)
+            .frame(maxWidth: .infinity)
         }
         .background(FeltBackground())
         .overlay { roundEndOverlay }

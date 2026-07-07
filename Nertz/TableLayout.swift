@@ -10,7 +10,7 @@ struct TableLayout {
     // MARK: Card size — one size for every card on the table
 
     var fGap: CGFloat { 8 }
-    var cardW: CGFloat { min((size.width - 12 - 5 * fGap) / 6, 64) }
+    var cardW: CGFloat { min((size.width - 12 - 5 * fGap) / 6, 78) }
     var cardH: CGFloat { cardW * 1.42 }
     var fCardW: CGFloat { cardW }
     var fCardH: CGFloat { cardH }
