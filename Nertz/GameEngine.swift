@@ -395,7 +395,6 @@ final class GameEngine {
         flipStock(0)
         undo = UndoSnapshot(board: snapshot, foundationEffect: nil)
         Haptics.flip()
-        Sound.play(.flip)
     }
 
     func handleTap(on card: Card) {
