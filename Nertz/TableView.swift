@@ -5,7 +5,6 @@ struct TableView: View {
 
     @State private var drag: DragInfo?
     @State private var hover: DropTarget?
-    @State private var showPause = false
 
     struct DragInfo {
         let unit: [Card]
@@ -39,8 +38,11 @@ struct TableView: View {
         .onDisappear {
             UIApplication.shared.isIdleTimerDisabled = false
         }
-        .onChange(of: showPause) { _, paused in
-            engine.paused = paused
+        .onChange(of: engine.paused) { _, isPaused in
+            if isPaused {
+                drag = nil
+                hover = nil
+            }
         }
     }
 
@@ -356,7 +358,7 @@ struct TableView: View {
 
         // Pause, top right
         Button {
-            showPause = true
+            engine.setPaused(true)
         } label: {
             Image(systemName: "pause.fill")
                 .font(.system(size: 14, weight: .bold))
@@ -367,11 +369,6 @@ struct TableView: View {
         .buttonStyle(.plain)
         .position(x: layout.size.width - 32, y: layout.statusY)
         .zIndex(9300)
-        .confirmationDialog("Paused", isPresented: $showPause, titleVisibility: .visible) {
-            Button("Keep playing", role: .cancel) {}
-            Button("New match", role: .destructive) { engine.newMatch() }
-            Button("Quit to menu", role: .destructive) { engine.quitToMenu() }
-        }
 
         // Stock count
         if let board = engine.boards.first, board.stock.count > 0 {
@@ -445,7 +442,12 @@ struct TableView: View {
                 ScoreboardOverlay(engine: engine, summary: summary)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
+            if engine.paused, engine.phase == .playing {
+                PauseOverlay(engine: engine)
+                    .transition(.opacity)
+            }
         }
         .animation(.spring(response: 0.45, dampingFraction: 0.85), value: engine.phase)
+        .animation(.easeInOut(duration: 0.22), value: engine.paused)
     }
 }

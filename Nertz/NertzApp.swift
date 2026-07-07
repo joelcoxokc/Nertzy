@@ -11,6 +11,7 @@ struct NertzApp: App {
 
 struct RootView: View {
     @State private var engine = GameEngine()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack {
@@ -23,6 +24,12 @@ struct RootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.3), value: engine.phase == .menu)
+        .onChange(of: scenePhase) { _, newPhase in
+            // Leaving the app pauses the table; the player resumes by hand.
+            if newPhase != .active {
+                engine.setPaused(true)
+            }
+        }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .preferredColorScheme(.dark)

@@ -20,7 +20,7 @@ final class GameEngine {
     private(set) var banner: BannerMessage?
     private(set) var seatPulse: [Int] = []
     var shakeTokens: [String: Int] = [:]
-    var paused = false
+    private(set) var paused = false
     /// Debug: deal opponents a 2-card nerts pile so rounds end fast (-quickround).
     var debugTinyNerts = false
     /// Debug: the AI also plays your seat — living screenshots/demos (-demo).
@@ -49,6 +49,7 @@ final class GameEngine {
     private var bannerCounter = 0
     private var pulseCounter = 0
     private var nextPileID = 0
+    private var pausedAt: Date?
     /// Cards from completed piles cleared off the table — still worth points.
     private var retired: [Card] = []
     private var loopTask: Task<Void, Never>?
@@ -84,6 +85,7 @@ final class GameEngine {
         nextPileID = 0
         shakeTokens = [:]
         paused = false
+        pausedAt = nil
         undo = nil
         seatPulse = Array(repeating: 0, count: playerCount)
         aiCallAt = Array(repeating: nil, count: playerCount)
@@ -150,6 +152,30 @@ final class GameEngine {
         loopTask?.cancel()
         dealTask?.cancel()
         phase = .menu
+    }
+
+    /// Pause freezes the AI loop; resuming shifts every AI's schedule
+    /// forward by the pause duration so nobody unleashes a burst of
+    /// queued-up moves the moment play continues.
+    func setPaused(_ on: Bool) {
+        guard phase == .playing else { return }
+        if on {
+            guard !paused else { return }
+            pausedAt = Date()
+            paused = true
+        } else {
+            guard paused else { return }
+            let delta = Date().timeIntervalSince(pausedAt ?? Date())
+            for i in aiNextMove.indices {
+                aiNextMove[i] = aiNextMove[i].addingTimeInterval(delta)
+            }
+            for i in aiCallAt.indices {
+                aiCallAt[i] = aiCallAt[i]?.addingTimeInterval(delta)
+            }
+            lastFoundationPlay = lastFoundationPlay.addingTimeInterval(delta)
+            pausedAt = nil
+            paused = false
+        }
     }
 
     func callNerts() {
@@ -258,21 +284,25 @@ final class GameEngine {
         return .flip
     }
 
-    private func tableShuffle() {
+    /// The official unsticking rule: everyone re-forms their stock from the
+    /// waste, then moves the top card of the stock to the bottom — so the
+    /// same threes never come up again. Applies to every player, so using
+    /// it manually is never an unfair advantage.
+    func tableShuffle() {
+        guard phase == .playing, !dealing else { return }
         for p in 0..<playerCount {
             var b = boards[p]
-            if !b.stock.isEmpty {
+            b.stock = b.stock + b.waste.reversed()
+            b.waste = []
+            if b.stock.count > 1 {
                 let top = b.stock.removeLast()
                 b.stock.insert(top, at: 0)
-            } else if !b.waste.isEmpty {
-                b.stock = b.waste.reversed()
-                b.waste = []
             }
             b.playsSinceRecycle = 0
             boards[p] = b
         }
         lastFoundationPlay = Date()
-        showBanner("Table stuck — everyone shuffles 🔀")
+        showBanner("Table shuffle — top card to the bottom 🔀")
     }
 
     private func showBanner(_ text: String) {
