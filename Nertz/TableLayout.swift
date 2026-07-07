@@ -60,10 +60,11 @@ struct TableLayout {
 
     var stockPos: CGPoint { CGPoint(x: colX(4), y: bottomRowY) }
 
-    /// depth 0 = top card (closest to the stock), deeper cards fan left.
+    /// depth 0 = top card (closest to the stock), deeper cards fan left —
+    /// spread wide enough that each buried card's corner index shows.
     func wastePos(depth: Int) -> CGPoint {
         let d = CGFloat(min(depth, 2))
-        return CGPoint(x: stockPos.x - cardW - 14 - d * 19, y: bottomRowY)
+        return CGPoint(x: stockPos.x - cardW - 14 - d * 24, y: bottomRowY)
     }
 
     // MARK: Foundations

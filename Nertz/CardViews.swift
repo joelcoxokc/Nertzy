@@ -42,19 +42,30 @@ struct CardView: View {
     }
 
     private var faceContent: some View {
-        VStack(spacing: 0) {
-            // Top half: the rank, big — hugs the top edge so it stays
-            // readable when cards fan out in a work pile.
-            Text(card.rankLabel)
-                .font(.system(size: width * 0.54, weight: .black))
-                .lineLimit(1)
-                .minimumScaleFactor(0.65)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .padding(.top, width * 0.05)
-            // Bottom half: the suit, big.
-            Text(card.suit.symbol)
-                .font(.system(size: width * 0.50))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        ZStack(alignment: .topLeading) {
+            VStack(spacing: 0) {
+                // Top half: the rank, big.
+                Text(card.rankLabel)
+                    .font(.system(size: width * 0.54, weight: .black))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.65)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.top, width * 0.10)
+                // Bottom half: the suit, big.
+                Text(card.suit.symbol)
+                    .font(.system(size: width * 0.50))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            // Corner index — the sliver you can read when cards are fanned
+            // in a work pile or spread across the waste.
+            HStack(spacing: width * 0.02) {
+                Text(card.rankLabel)
+                    .font(.system(size: width * 0.18, weight: .heavy))
+                Text(card.suit.symbol)
+                    .font(.system(size: width * 0.15, weight: .bold))
+            }
+            .padding(.leading, width * 0.065)
+            .padding(.top, width * 0.045)
         }
         .foregroundStyle(ink)
     }
