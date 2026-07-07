@@ -114,6 +114,7 @@ struct TableView: View {
         var faceUp: Bool
         var w: CGFloat
         var rot: Double
+        var opacity: Double = 1
         var dragging = false
         var flight = false
         var shadowed = false
@@ -165,25 +166,34 @@ struct TableView: View {
                 ))
             }
         }
-        // Foundations — top two cards per pile, hiding any card still in flight
+        // Foundations — top two cards per pile, hiding any card still in flight.
+        // Completed piles flip face down, shrink, and leave the table.
         let flyingIDs = Set(engine.flying.map(\.id))
-        for pile in engine.foundations {
-            let visible = pile.cards.filter { !flyingIDs.contains($0.id) }.suffix(2)
+        for (idx, pile) in engine.foundations.enumerated() {
+            let visible: [Card]
+            if pile.faceDown {
+                visible = Array(pile.cards.suffix(1))
+            } else {
+                visible = Array(pile.cards.filter { !flyingIDs.contains($0.id) }.suffix(2))
+            }
             for (k, c) in visible.enumerated() {
                 out.append(RC(
-                    id: c.id, card: c, pos: layout.foundationSlot(pile.id),
-                    z: 40 + Double(pile.id) * 2 + Double(k), faceUp: true,
-                    w: layout.fCardW, rot: tossAngle(for: c),
+                    id: c.id, card: c, pos: layout.foundationSlot(idx),
+                    z: 40 + Double(idx) * 2 + Double(k), faceUp: !pile.faceDown,
+                    w: pile.vanishing ? layout.fCardW * 0.1 : layout.fCardW,
+                    rot: tossAngle(for: c),
+                    opacity: pile.vanishing ? 0 : 1,
                     shadowed: k == visible.count - 1
                 ))
             }
         }
         // Opponent cards flying in from their seats
         for f in engine.flying {
+            let slotIdx = engine.foundations.firstIndex(where: { $0.id == f.pileID })
             out.append(RC(
                 id: f.id, card: f.card,
-                pos: f.landed
-                    ? layout.foundationSlot(f.pileIndex)
+                pos: f.landed && slotIdx != nil
+                    ? layout.foundationSlot(slotIdx!)
                     : layout.seatPos(f.fromSeat).offsetBy(0, 18),
                 z: 6000, faceUp: true,
                 w: f.landed ? layout.fCardW : layout.fCardW * 0.8,
@@ -220,6 +230,7 @@ struct TableView: View {
                     y: rc.dragging ? 12 : 2.5
                 )
                 .modifier(ShakeEffect(animatableData: CGFloat(engine.shakeTokens[rc.id] ?? 0)))
+                .opacity(rc.opacity)
                 .position(rc.pos)
                 .zIndex(rc.z)
                 .onTapGesture { engine.handleTap(on: rc.card) }
@@ -233,6 +244,8 @@ struct TableView: View {
                     value: rc.pos
                 )
                 .animation(.spring(response: 0.34, dampingFraction: 0.82), value: rc.faceUp)
+                .animation(.spring(response: 0.35, dampingFraction: 0.85), value: rc.w)
+                .animation(.easeOut(duration: 0.32), value: rc.opacity)
                 .animation(.linear(duration: 0.3), value: engine.shakeTokens[rc.id] ?? 0)
         }
     }
@@ -287,12 +300,14 @@ struct TableView: View {
 
     private func pulseLayer(_ layout: TableLayout) -> some View {
         ForEach(engine.pulses) { pulse in
-            LandingRing(
-                color: CardPalette.back(for: pulse.owner),
-                cardW: layout.fCardW
-            )
-            .position(layout.foundationSlot(pulse.pileIndex))
-            .zIndex(8500)
+            if let idx = engine.foundations.firstIndex(where: { $0.id == pulse.pileID }) {
+                LandingRing(
+                    color: CardPalette.back(for: pulse.owner),
+                    cardW: layout.fCardW
+                )
+                .position(layout.foundationSlot(idx))
+                .zIndex(8500)
+            }
         }
     }
 

@@ -29,7 +29,7 @@ final class GameEngine {
     /// One-level undo of your last move.
     struct UndoSnapshot {
         let board: PlayerBoard
-        let foundationEffect: (pileIndex: Int, cardID: String, wasNewPile: Bool)?
+        let foundationEffect: (pileID: Int, cardID: String, wasNewPile: Bool)?
     }
     private(set) var undo: UndoSnapshot?
     var canUndo: Bool { undo != nil && phase == .playing && !dealing }
@@ -48,6 +48,9 @@ final class GameEngine {
     private var rng = SystemRandomNumberGenerator()
     private var bannerCounter = 0
     private var pulseCounter = 0
+    private var nextPileID = 0
+    /// Cards from completed piles cleared off the table — still worth points.
+    private var retired: [Card] = []
     private var loopTask: Task<Void, Never>?
     private var dealTask: Task<Void, Never>?
 
@@ -77,6 +80,8 @@ final class GameEngine {
         foundations = []
         flying = []
         pulses = []
+        retired = []
+        nextPileID = 0
         shakeTokens = [:]
         paused = false
         undo = nil
@@ -162,6 +167,7 @@ final class GameEngine {
         for pile in foundations {
             for card in pile.cards { counts[card.owner] += 1 }
         }
+        for card in retired { counts[card.owner] += 1 }
         let left = boards.map { $0.nerts.count }
         let deltas = (0..<playerCount).map { counts[$0] - 2 * left[$0] }
         var totals = scores
@@ -318,12 +324,17 @@ final class GameEngine {
                 guard idx < foundations.count, foundations[idx].accepts(first) else { return false }
                 removeCards(at: source, player: p)
                 foundations[idx].cards.append(first)
-                noteFoundationPlay(p, card: first, pileIndex: idx)
+                noteFoundationPlay(p, card: first, pileID: foundations[idx].id)
+                if foundations[idx].isComplete {
+                    // The king caps the pile: flip it over, then clear it away.
+                    retirePile(foundations[idx].id, after: p == 0 ? 0.9 : 1.7)
+                }
             } else {
                 guard first.rank == 1, foundations.count < maxFoundations else { return false }
                 removeCards(at: source, player: p)
-                foundations.append(FoundationPile(id: foundations.count, cards: [first]))
-                noteFoundationPlay(p, card: first, pileIndex: foundations.count - 1)
+                foundations.append(FoundationPile(id: nextPileID, cards: [first]))
+                nextPileID += 1
+                noteFoundationPlay(p, card: first, pileID: foundations.last!.id)
             }
         case .work(let w):
             guard (0..<4).contains(w) else { return false }
@@ -338,16 +349,16 @@ final class GameEngine {
         return true
     }
 
-    private func noteFoundationPlay(_ p: Int, card: Card, pileIndex: Int) {
+    private func noteFoundationPlay(_ p: Int, card: Card, pileID: Int) {
         lastFoundationPlay = Date()
         if p > 0 {
             seatPulse[p] += 1
-            launchFlight(card: card, from: p, to: pileIndex)
+            launchFlight(card: card, from: p, to: pileID)
         }
     }
 
-    private func launchFlight(card: Card, from seat: Int, to pileIndex: Int) {
-        flying.append(FlyingCard(card: card, fromSeat: seat, pileIndex: pileIndex))
+    private func launchFlight(card: Card, from seat: Int, to pileID: Int) {
+        flying.append(FlyingCard(card: card, fromSeat: seat, pileID: pileID))
         pulseCounter += 1
         let pulseID = pulseCounter
         Task {
@@ -359,10 +370,32 @@ final class GameEngine {
             try? await Task.sleep(for: .milliseconds(650))
             self.flying.removeAll { $0.id == card.id }
             guard self.phase == .playing else { return }
-            self.pulses.append(LandingPulse(id: pulseID, pileIndex: pileIndex, owner: seat))
+            self.pulses.append(LandingPulse(id: pulseID, pileID: pileID, owner: seat))
             Sound.play(.opponent)
             try? await Task.sleep(for: .milliseconds(650))
             self.pulses.removeAll { $0.id == pulseID }
+        }
+    }
+
+    /// A completed pile: flip the king face down, pause, shrink it away,
+    /// then remove it so the table stays uncluttered.
+    private func retirePile(_ pileID: Int, after delay: Double) {
+        Task {
+            try? await Task.sleep(for: .seconds(delay))
+            guard self.phase == .playing,
+                  let i = self.foundations.firstIndex(where: { $0.id == pileID }),
+                  self.foundations[i].isComplete else { return }
+            self.foundations[i].faceDown = true
+            Sound.play(.place)
+            try? await Task.sleep(for: .seconds(1.5))
+            guard self.phase == .playing,
+                  let j = self.foundations.firstIndex(where: { $0.id == pileID }) else { return }
+            self.foundations[j].vanishing = true
+            try? await Task.sleep(for: .milliseconds(400))
+            guard self.phase == .playing,
+                  let k = self.foundations.firstIndex(where: { $0.id == pileID }) else { return }
+            self.retired.append(contentsOf: self.foundations[k].cards)
+            self.foundations.remove(at: k)
         }
     }
 
@@ -490,9 +523,10 @@ final class GameEngine {
     // MARK: - Undo (one level)
 
     private func recordUndo(snapshot: PlayerBoard, target: DropTarget, movedCardID: String?) {
-        var effect: (pileIndex: Int, cardID: String, wasNewPile: Bool)?
+        var effect: (pileID: Int, cardID: String, wasNewPile: Bool)?
         if case .foundation(let idx) = target, let movedCardID {
-            effect = (idx ?? foundations.count - 1, movedCardID, idx == nil)
+            let pileID = idx.map { foundations[$0].id } ?? (foundations.last?.id ?? -1)
+            effect = (pileID, movedCardID, idx == nil)
         }
         undo = UndoSnapshot(board: snapshot, foundationEffect: effect)
     }
@@ -500,21 +534,23 @@ final class GameEngine {
     func undoLast() {
         guard phase == .playing, !dealing, !paused, let u = undo else { return }
         if let fe = u.foundationEffect {
-            let stillReversible = fe.pileIndex < foundations.count
-                && foundations[fe.pileIndex].cards.last?.id == fe.cardID
+            let index = foundations.firstIndex(where: { $0.id == fe.pileID })
+            let stillReversible = index != nil
+                && !foundations[index!].faceDown
+                && foundations[index!].cards.last?.id == fe.cardID
                 && (!fe.wasNewPile
-                    || (fe.pileIndex == foundations.count - 1
-                        && foundations[fe.pileIndex].cards.count == 1))
-            guard stillReversible else {
+                    || (index == foundations.count - 1
+                        && foundations[index!].cards.count == 1))
+            guard stillReversible, let index else {
                 undo = nil
                 showBanner("Too late to undo — the table moved on")
                 Haptics.nope()
                 return
             }
             if fe.wasNewPile {
-                foundations.removeLast()
+                foundations.remove(at: index)
             } else {
-                foundations[fe.pileIndex].cards.removeLast()
+                foundations[index].cards.removeLast()
             }
         }
         boards[0] = u.board

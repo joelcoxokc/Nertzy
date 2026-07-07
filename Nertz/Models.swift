@@ -55,12 +55,18 @@ func stacksOnWork(_ card: Card, onto base: Card) -> Bool {
 // MARK: - Piles
 
 struct FoundationPile: Identifiable {
-    let id: Int
+    let id: Int             // unique per round — piles can be retired, so never an index
     var cards: [Card]
+    var faceDown = false    // completed: the king flipped over
+    var vanishing = false   // shrinking off the table
+
+    /// 13 normally; the -shortpiles debug flag lowers it so pile
+    /// completion can be tested in seconds.
+    nonisolated(unsafe) static var completeCount = 13
 
     var suit: Suit { cards.first?.suit ?? .spades }
     var top: Card? { cards.last }
-    var isComplete: Bool { cards.count == 13 }
+    var isComplete: Bool { cards.count >= Self.completeCount }
 
     func accepts(_ card: Card) -> Bool {
         guard !isComplete, let top else { return false }
@@ -188,7 +194,7 @@ struct RoundSummary {
 struct FlyingCard: Identifiable {
     let card: Card
     let fromSeat: Int               // player index 1+
-    let pileIndex: Int
+    let pileID: Int
     var landed = false
 
     var id: String { card.id }
@@ -197,6 +203,6 @@ struct FlyingCard: Identifiable {
 /// A visual "stamp" when an opponent's card lands on a foundation.
 struct LandingPulse: Identifiable {
     let id: Int
-    let pileIndex: Int
+    let pileID: Int
     let owner: Int
 }
