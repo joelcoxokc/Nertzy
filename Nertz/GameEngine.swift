@@ -298,7 +298,6 @@ final class GameEngine {
                 let top = b.stock.removeLast()
                 b.stock.insert(top, at: 0)
             }
-            b.playsSinceRecycle = 0
             boards[p] = b
         }
         lastFoundationPlay = Date()
@@ -375,7 +374,6 @@ final class GameEngine {
             removeCards(at: source, player: p)
             boards[p].work[w].append(contentsOf: unit)
         }
-        boards[p].playsSinceRecycle += 1
         return true
     }
 
@@ -432,15 +430,11 @@ final class GameEngine {
     private func flipStock(_ p: Int) {
         var b = boards[p]
         if b.stock.isEmpty {
+            // A pure recycle: the same threes come up again. Only playing a
+            // card from the waste (or a table shuffle) changes the phase.
             guard !b.waste.isEmpty else { return }
             b.stock = b.waste.reversed()
             b.waste = []
-            if b.playsSinceRecycle == 0, b.stock.count > 1 {
-                // A full barren cycle: shift one card so the same threes don't repeat.
-                let top = b.stock.removeLast()
-                b.stock.insert(top, at: 0)
-            }
-            b.playsSinceRecycle = 0
         } else {
             for _ in 0..<min(3, b.stock.count) {
                 b.waste.append(b.stock.removeLast())
