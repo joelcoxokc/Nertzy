@@ -79,7 +79,6 @@ struct PlayerBoard {
     var work: [[Card]] = [[], [], [], []]   // first = base ... last = top, all face up
     var stock: [Card] = []          // last = top
     var waste: [Card] = []          // last = top
-    var playsSinceRecycle: Int = 0  // if a full stock cycle yields nothing, shift one card
 }
 
 // MARK: - Moves
