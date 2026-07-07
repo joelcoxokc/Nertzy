@@ -1,4 +1,5 @@
 import AVFoundation
+import UIKit
 
 /// Procedurally synthesized card sounds — no audio assets required.
 /// Short filtered-noise bursts (the card hitting felt) layered with a low
@@ -50,15 +51,60 @@ enum Sound {
         }
         players.forEach { $0.play() }
         ready = true
+        installRecoveryObservers()
     }
 
     static func play(_ kind: Kind) {
-        guard ready, engine.isRunning,
+        guard ready else { return }
+        // Self-heal: a phone call or Siri stops the engine, and iOS won't
+        // restart it for us. Revive it on the next play if needed.
+        if !engine.isRunning { recover() }
+        guard engine.isRunning,
               let variants = buffers[kind],
               let buffer = variants.randomElement() else { return }
         let node = players[nextPlayer]
         nextPlayer = (nextPlayer + 1) % players.count
         node.scheduleBuffer(buffer, at: nil)
+    }
+
+    // MARK: - Interruption recovery
+
+    /// Phone calls, Siri, and route changes (AirPods in/out) stop the
+    /// engine. Restart it when the interruption ends, when the app returns
+    /// to the foreground, and lazily from play() as a last resort.
+    private static func recover() {
+        guard ready, !engine.isRunning else { return }
+        try? AVAudioSession.sharedInstance().setActive(true)
+        do {
+            try engine.start()
+        } catch {
+            return
+        }
+        players.forEach { $0.play() }
+    }
+
+    private static func installRecoveryObservers() {
+        let center = NotificationCenter.default
+        center.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil, queue: .main
+        ) { note in
+            guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
+            Task { @MainActor in Sound.recover() }
+        }
+        center.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine, queue: .main
+        ) { _ in
+            Task { @MainActor in Sound.recover() }
+        }
+        center.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil, queue: .main
+        ) { _ in
+            Task { @MainActor in Sound.recover() }
+        }
     }
 
     // MARK: - Synthesis
