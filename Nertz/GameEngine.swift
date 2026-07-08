@@ -604,8 +604,14 @@ final class GameEngine {
         return nil
     }
 
+    /// Pending-aware pile check: online, your own in-flight tosses
+    /// count as already down, so runs chain without waiting on the wire.
+    func pileAccepts(_ card: Card, at index: Int) -> Bool {
+        table.pileAccepts(card, pileIndex: index)
+    }
+
     func foundationTarget(for card: Card) -> DropTarget? {
-        if let idx = foundations.firstIndex(where: { $0.accepts(card) }) {
+        if let idx = foundations.indices.first(where: { pileAccepts(card, at: $0) }) {
             return .foundation(idx)
         }
         if card.rank == 1, foundations.count < maxFoundations {
@@ -685,7 +691,7 @@ final class GameEngine {
         case .foundation(let idx):
             guard unit.count == 1 else { return false }
             if let idx {
-                return idx < foundations.count && foundations[idx].accepts(first)
+                return idx < foundations.count && pileAccepts(first, at: idx)
             }
             return first.rank == 1 && foundations.count < maxFoundations
         case .work(let w):

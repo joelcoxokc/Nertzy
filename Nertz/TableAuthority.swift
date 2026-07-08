@@ -81,6 +81,12 @@ protocol TableAuthority: AnyObject {
     /// moved on. Solo undo today; always false at a networked table.
     func undoFoundationPlay(pileID: Int, cardID: String, wasNewPile: Bool) -> Bool
 
+    /// Would this card land on this pile right now? At a networked
+    /// table your own still-flying tosses count as already down, so a
+    /// run (4♥ then 5♥) chains without waiting for the wire — if the
+    /// chain's base bounces, the host bounces the rest.
+    func pileAccepts(_ card: Card, pileIndex: Int) -> Bool
+
     // Private-board reporting — badges for boards nobody else can see.
     /// The engine reports simulated seats' nerts counts when they
     /// change; a networked table broadcasts them.
@@ -229,6 +235,10 @@ final class LocalTableAuthority: TableAuthority {
             }
         }
         return true
+    }
+
+    func pileAccepts(_ card: Card, pileIndex: Int) -> Bool {
+        pileIndex < foundations.count && foundations[pileIndex].accepts(card)
     }
 
     func undoFoundationPlay(pileID: Int, cardID: String, wasNewPile: Bool) -> Bool {
