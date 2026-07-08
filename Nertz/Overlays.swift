@@ -108,13 +108,8 @@ struct ScoreboardOverlay: View {
     let engine: GameEngine
     let summary: RoundSummary
 
-    private func name(_ p: Int) -> String {
-        p == 0 ? "You" : AIProfile.roster[p - 1].name
-    }
-
-    private func emoji(_ p: Int) -> String {
-        p == 0 ? "🙂" : AIProfile.roster[p - 1].emoji
-    }
+    private func name(_ p: Int) -> String { AIProfile.seatName(p) }
+    private func emoji(_ p: Int) -> String { AIProfile.seatEmoji(p) }
 
     private var confettiDeserved: Bool {
         if let w = summary.winner { return w == 0 }

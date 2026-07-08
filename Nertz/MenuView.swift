@@ -5,6 +5,7 @@ struct MenuView: View {
 
     @AppStorage("opponents") private var opponents = 2
     @AppStorage("difficulty") private var difficultyRaw = Difficulty.classic.rawValue
+    @State private var showStats = false
 
     var body: some View {
         ZStack {
@@ -14,15 +15,20 @@ struct MenuView: View {
                 titleBlock
                 Spacer(minLength: 26)
                 VStack(spacing: 24) {
-                    optionSection("OPPONENTS") { opponentPicker }
-                    optionSection("TABLE SPEED") { difficultyPicker }
+                    titledSection("OPPONENTS") { opponentPicker }
+                    titledSection("TABLE SPEED") { difficultyPicker }
                 }
                 Spacer(minLength: 26)
                 dealButton
-                Spacer(minLength: 34)
+                statsButton
+                    .padding(.top, 16)
+                Spacer(minLength: 30)
             }
             .padding(.horizontal, 26)
             .frame(maxWidth: 480)
+        }
+        .fullScreenCover(isPresented: $showStats) {
+            StatsView()
         }
     }
 
@@ -57,20 +63,6 @@ struct MenuView: View {
     }
 
     // MARK: Options
-
-    private func optionSection<Content: View>(
-        _ title: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Text(title)
-                .font(.system(size: 11, weight: .heavy, design: .rounded))
-                .tracking(2.5)
-                .foregroundStyle(.white.opacity(0.45))
-            content()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
 
     private var opponentPicker: some View {
         HStack(spacing: 10) {
@@ -173,6 +165,27 @@ struct MenuView: View {
                 )
                 .overlay(Capsule().strokeBorder(.white.opacity(0.25), lineWidth: 1.5))
                 .shadow(color: .black.opacity(0.35), radius: 12, y: 6)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var statsButton: some View {
+        Button {
+            Haptics.flip()
+            showStats = true
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "trophy.fill")
+                    .font(.system(size: 12, weight: .bold))
+                Text("YOUR RECORD")
+                    .font(.system(size: 13, weight: .heavy, design: .rounded))
+                    .tracking(1.5)
+            }
+            .foregroundStyle(.white.opacity(0.75))
+            .padding(.horizontal, 22)
+            .padding(.vertical, 10)
+            .background(Capsule().fill(.white.opacity(0.08)))
+            .overlay(Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 1))
         }
         .buttonStyle(.plain)
     }

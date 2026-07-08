@@ -90,6 +90,24 @@ func tossAngle(for card: Card, spread: Double = 3.0) -> Double {
     return (unit * 2 - 1) * spread
 }
 
+// MARK: - Section chrome
+
+/// Small tracked-caps title above a block — the standard section chrome on
+/// the menu-side screens.
+func titledSection<Content: View>(
+    _ title: String,
+    @ViewBuilder content: () -> Content
+) -> some View {
+    VStack(alignment: .leading, spacing: 9) {
+        Text(title)
+            .font(.system(size: 11, weight: .heavy, design: .rounded))
+            .tracking(2.5)
+            .foregroundStyle(.white.opacity(0.45))
+        content()
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+}
+
 // MARK: - Felt table background
 
 struct FeltBackground: View {

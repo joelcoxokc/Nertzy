@@ -36,6 +36,8 @@ struct RootView: View {
         .onAppear {
             let args = ProcessInfo.processInfo.arguments
             if args.contains("-autostart") {
+                // Dev launches never touch the record book.
+                StatsStore.shared.recordingEnabled = false
                 engine.debugTinyNerts = args.contains("-quickround")
                 engine.debugDemo = args.contains("-demo")
                 if args.contains("-shortpiles") {
