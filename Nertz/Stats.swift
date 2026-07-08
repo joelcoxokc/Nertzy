@@ -49,6 +49,14 @@ struct MatchRecord: Codable, Identifiable {
         if case .solo(let d) = mode { return d }
         return nil
     }
+
+    /// The real people at this table (never me, never bots).
+    var humanOpponents: [SeatRecord] {
+        seats.filter {
+            if case .human = $0.kind { return true }
+            return false
+        }
+    }
 }
 
 // MARK: - Store
@@ -139,11 +147,12 @@ final class StatsStore {
 
     /// A round is "won" by strictly out-scoring every other seat; streaks
     /// count finished matches only (walking away doesn't break one).
-    func tally(_ difficulty: Difficulty? = nil) -> Tally {
+    func tally(_ difficulty: Difficulty? = nil, mode: MatchRecord.Mode? = nil) -> Tally {
         var t = Tally()
         var streak = 0
         for m in matches {
             if let difficulty, m.difficulty != difficulty { continue }
+            if let mode, m.mode != mode { continue }
             guard let me = m.mySeat else { continue }
             for r in m.rounds {
                 t.roundsPlayed += 1
@@ -167,6 +176,51 @@ final class StatsStore {
         }
         t.currentStreak = streak
         return t
+    }
+
+    /// Your record against each human you've shared a table with —
+    /// keyed by Game Center id so renamed players stay one person.
+    struct OpponentRecord: Identifiable {
+        let id: String
+        let name: String
+        let emoji: String
+        var matchesWon = 0
+        var matchesLost = 0
+        var roundsWon = 0
+        var roundsPlayed = 0
+    }
+
+    func opponentRecords() -> [OpponentRecord] {
+        var byID: [String: OpponentRecord] = [:]
+        var order: [String] = []
+        for m in matches {
+            guard m.mode == .multiplayer, let me = m.mySeat else { continue }
+            var myRoundWins = 0
+            for r in m.rounds where me < r.deltas.count {
+                let mine = r.deltas[me]
+                if r.deltas.enumerated().allSatisfy({ $0.offset == me || $0.element < mine }) {
+                    myRoundWins += 1
+                }
+            }
+            for seat in m.humanOpponents {
+                guard case .human(let id) = seat.kind else { continue }
+                if byID[id] == nil {
+                    byID[id] = OpponentRecord(id: id, name: seat.name, emoji: seat.emoji)
+                    order.append(id)
+                }
+                byID[id]?.roundsPlayed += m.rounds.count
+                byID[id]?.roundsWon += myRoundWins
+                if let w = m.winnerSeat {
+                    if w == me {
+                        byID[id]?.matchesWon += 1
+                    } else {
+                        byID[id]?.matchesLost += 1
+                    }
+                }
+            }
+        }
+        return order.compactMap { byID[$0] }
+            .sorted { $0.roundsPlayed > $1.roundsPlayed }
     }
 
     // MARK: Disk
