@@ -1,4 +1,5 @@
 import SwiftUI
+import GameKit
 
 struct MenuView: View {
     let engine: GameEngine
@@ -13,12 +14,15 @@ struct MenuView: View {
     @State private var matchmakingError: String?
 
     enum OnlineRoute: Identifiable {
-        /// The key varies per invite, so a fresh invite re-presents the
-        /// sheet even if matchmaking was already up.
+        /// Table codes + join field; the front door.
+        case hub
+        /// Apple's invite/auto-match sheet (fallback). The key varies
+        /// per invite, so a fresh invite re-presents it.
         case matchmaking(String)
         case lobby
         var id: String {
             switch self {
+            case .hub: return "hub"
             case .matchmaking(let key): return "matchmaking-\(key)"
             case .lobby: return "lobby"
             }
@@ -63,17 +67,15 @@ struct MenuView: View {
         }
         .fullScreenCover(item: $onlineRoute) { route in
             switch route {
+            case .hub:
+                OnlineHubView(
+                    onMatch: { adoptMatch($0) },
+                    onInvites: { onlineRoute = .matchmaking("invite-ui") },
+                    onClose: { onlineRoute = nil }
+                )
             case .matchmaking:
                 MatchmakerView(invite: gameCenter.pendingInvite) { match in
-                    let session = MatchSession(match: match)
-                    // A guest enters the game the moment the host
-                    // announces the seating.
-                    session.onTableConfig = { [weak session] config in
-                        session?.startAsGuest(engine: engine, config: config)
-                    }
-                    gameCenter.session = session
-                    gameCenter.pendingInvite = nil
-                    onlineRoute = .lobby
+                    adoptMatch(match)
                 } onEnd: { error in
                     gameCenter.pendingInvite = nil
                     matchmakingError = error
@@ -118,11 +120,27 @@ struct MenuView: View {
             if let session = gameCenter.session, session.ended {
                 gameCenter.session = nil
             }
-            // Dev: jump straight to the record book for screenshots.
+            // Dev: jump straight to a screen for screenshots.
             if ProcessInfo.processInfo.arguments.contains("-showstats") {
                 showStats = true
             }
+            if ProcessInfo.processInfo.arguments.contains("-showhub") {
+                onlineRoute = .hub
+            }
         }
+    }
+
+    /// A found match — by code or by invite — becomes the session the
+    /// lobby runs on.
+    private func adoptMatch(_ match: GKMatch) {
+        let session = MatchSession(match: match)
+        // A guest enters the game the moment the host announces seating.
+        session.onTableConfig = { [weak session] config in
+            session?.startAsGuest(engine: engine, config: config)
+        }
+        gameCenter.session = session
+        gameCenter.pendingInvite = nil
+        onlineRoute = .lobby
     }
 
     // MARK: Title
@@ -273,7 +291,7 @@ struct MenuView: View {
             Haptics.fanfare()
             matchmakingError = nil
             engine.onlineFarewell = nil
-            onlineRoute = .matchmaking("auto")
+            onlineRoute = .hub
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "wifi")
