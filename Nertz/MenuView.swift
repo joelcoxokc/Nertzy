@@ -8,6 +8,7 @@ struct MenuView: View {
     @AppStorage("difficulty") private var difficultyRaw = Difficulty.classic.rawValue
     @AppStorage(GameCenterManager.settingKey) private var gameCenterOn = false
     @State private var showStats = false
+    @State private var showBoards = false
     @State private var onlineRoute: OnlineRoute?
     @State private var matchmakingError: String?
 
@@ -42,6 +43,9 @@ struct MenuView: View {
                 onlineStatusLine
                 HStack(spacing: 10) {
                     statsButton
+                    if gameCenterOn, gameCenter.auth == .authenticated {
+                        boardsButton
+                    }
                     gameCenterToggle
                 }
                 .padding(.top, 14)
@@ -52,6 +56,10 @@ struct MenuView: View {
         }
         .fullScreenCover(isPresented: $showStats) {
             StatsView()
+        }
+        .fullScreenCover(isPresented: $showBoards) {
+            GameCenterBoardsView { showBoards = false }
+                .ignoresSafeArea()
         }
         .fullScreenCover(item: $onlineRoute) { route in
             switch route {
@@ -317,6 +325,23 @@ struct MenuView: View {
         if engine.onlineFarewell != nil { return true }
         if case .failed = gameCenter.auth { return true }
         return false
+    }
+
+    /// The world's standings — only shown once Game Center is live.
+    private var boardsButton: some View {
+        Button {
+            Haptics.flip()
+            showBoards = true
+        } label: {
+            Image(systemName: "rosette")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(.white.opacity(0.75))
+                .padding(.horizontal, 13)
+                .padding(.vertical, 10)
+                .background(Capsule().fill(.white.opacity(0.08)))
+                .overlay(Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
     }
 
     private var gameCenterToggle: some View {

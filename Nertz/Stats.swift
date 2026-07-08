@@ -130,6 +130,11 @@ final class StatsStore {
             matches[matches.count - 1].winnerSeat = w
         }
         save()
+        // Feed Game Center from the same door (no-op when signed out).
+        LeaderboardReporter.report(
+            roundDelta: summary.deltas.first ?? 0,
+            wonMatchTotal: summary.winner == 0 ? tally().matchesWon : nil
+        )
     }
 
     // MARK: Derived stats
