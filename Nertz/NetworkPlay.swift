@@ -173,6 +173,10 @@ final class HostTableAuthority: TableAuthority, TableAuthorityDelegate {
         false   // no undo message in the protocol; the table moved on
     }
 
+    func pileAccepts(_ card: Card, pileIndex: Int) -> Bool {
+        pileIndex < inner.foundations.count && inner.foundations[pileIndex].accepts(card)
+    }
+
     // MARK: Badges
 
     func reportNerts(seat: Int, count: Int) {
@@ -343,6 +347,11 @@ final class GuestTableAuthority: TableAuthority {
     @ObservationIgnored private let sendMessage: (NetMessage) -> Void
     @ObservationIgnored private var matchID: UUID?
     @ObservationIgnored private var outcomes: [String: WireResolution] = [:]
+    /// Card ids in host-broadcast order. Replica mutations MUST apply
+    /// in this order — a flight can't land before an earlier one, even
+    /// if its own timer is up (two cards racing for one pile 0.3s
+    /// apart would otherwise stack backwards).
+    @ObservationIgnored private var resolutionOrder: [String] = []
     @ObservationIgnored private var roundActive = false
     @ObservationIgnored private var awaitingRoundEnd = false
 
@@ -369,6 +378,7 @@ final class GuestTableAuthority: TableAuthority {
         foundations = []
         flying = []
         outcomes = [:]
+        resolutionOrder = []
         summary = nil
         remoteNerts = Array(repeating: nil, count: map.total)
         roundActive = true
@@ -381,7 +391,7 @@ final class GuestTableAuthority: TableAuthority {
         awaitingRoundEnd = true
         sendMessage(.nertsCalled(seat: map.global(caller)))
         Task { [weak self] in
-            try? await Task.sleep(for: .seconds(6))
+            try? await Task.sleep(for: .seconds(8))
             guard let self, self.awaitingRoundEnd, self.roundActive else { return }
             self.delegate?.tableClosed(reason: "The table went quiet")
         }
@@ -397,7 +407,7 @@ final class GuestTableAuthority: TableAuthority {
         guard roundActive else { return nil }
         let pileID: Int?
         if let index {
-            guard index < foundations.count, foundations[index].accepts(card) else { return nil }
+            guard pileAccepts(card, pileIndex: index) else { return nil }
             pileID = foundations[index].id
         } else {
             guard card.rank == 1, foundations.count < maxFoundations else { return nil }
@@ -426,6 +436,24 @@ final class GuestTableAuthority: TableAuthority {
         false
     }
 
+    /// The replica's pile, plus my own tosses still in the air — a run
+    /// chains onto them immediately; the host bounces the chain if the
+    /// base loses its race.
+    func pileAccepts(_ card: Card, pileIndex: Int) -> Bool {
+        guard pileIndex < foundations.count else { return false }
+        let pile = foundations[pileIndex]
+        var top = pile.cards.last
+        var count = pile.cards.count
+        for f in flying where f.fromSeat == 0 && !f.bouncing && f.pileID == pile.id {
+            // Skip tosses already known to have bounced.
+            if let res = outcomes[f.id], !res.landed { continue }
+            top = f.card
+            count += 1
+        }
+        guard count < FoundationPile.completeCount, let top else { return false }
+        return card.suit == top.suit && card.rank == top.rank + 1
+    }
+
     // MARK: Badges
 
     func reportNerts(seat: Int, count: Int) {
@@ -439,15 +467,35 @@ final class GuestTableAuthority: TableAuthority {
     // MARK: Pacing
 
     func settleDueClaims(now: Date) {
-        let due = flying.filter { !$0.bouncing && now >= $0.resolveAt }
-        for f in due {
-            if let res = outcomes.removeValue(forKey: f.id) {
-                settle(f, with: res)
-            } else if f.fromSeat == 0, now.timeIntervalSince(f.resolveAt) > 3 {
-                // The host never answered — take the card back.
-                flying.removeAll { $0.id == f.id }
-                delegate?.claimBounced(f)
+        drainResolved(now: now)
+        // My own unanswered tosses: give a slow connection real room,
+        // then take the card back rather than hang forever.
+        for f in flying where f.fromSeat == 0 && !f.bouncing
+            && outcomes[f.id] == nil
+            && now.timeIntervalSince(f.resolveAt) > 5 {
+            flying.removeAll { $0.id == f.id }
+            delegate?.claimBounced(f)
+        }
+    }
+
+    /// Apply resolved flights strictly in host order. The head of the
+    /// line waits out its flight time; nothing may overtake it.
+    private func drainResolved(now: Date = Date()) {
+        while let id = resolutionOrder.first {
+            guard let res = outcomes[id] else {
+                resolutionOrder.removeFirst()
+                continue
             }
+            guard let f = flying.first(where: { $0.id == id }) else {
+                // Flight already cleared (round settled underneath it).
+                outcomes.removeValue(forKey: id)
+                resolutionOrder.removeFirst()
+                continue
+            }
+            guard now >= f.resolveAt else { break }
+            outcomes.removeValue(forKey: id)
+            resolutionOrder.removeFirst()
+            settle(f, with: res)
         }
     }
 
@@ -488,13 +536,17 @@ final class GuestTableAuthority: TableAuthority {
         let fromLocal = map.local(res.fromSeat)
         let card = map.localCard(res.card)
         if fromLocal == 0 {
-            // The answer to my own toss — settle it on the next tick.
+            // The answer to my own toss — settle right now (through the
+            // ordered drain, so nothing lands out of host order).
             guard let idx = flying.firstIndex(where: { $0.id == card.id }) else { return }
             outcomes[card.id] = res
+            resolutionOrder.append(card.id)
             flying[idx].resolveAt = Date()
+            drainResolved()
         } else {
             // Someone else's play: give it a short flight, outcome known.
             outcomes[card.id] = res
+            resolutionOrder.append(card.id)
             flying.append(FlyingCard(
                 card: card, fromSeat: fromLocal, source: res.source,
                 pileID: res.newPile ? nil : res.pileID,
@@ -580,19 +632,24 @@ final class GuestTableAuthority: TableAuthority {
 
     private func handleRoundEnd(_ globalSummary: RoundSummary) {
         // Whatever is still airborne settles instantly, in host order.
-        for f in flying where !f.bouncing {
-            if let res = outcomes.removeValue(forKey: f.id) {
-                if res.landed {
-                    commitToReplica(f, res)
-                } else if f.fromSeat == 0 {
-                    delegate?.claimBounced(f)
-                }
+        for id in resolutionOrder {
+            guard let res = outcomes.removeValue(forKey: id),
+                  let f = flying.first(where: { $0.id == id }), !f.bouncing else { continue }
+            if res.landed {
+                flying.removeAll { $0.id == id }
+                commitToReplica(f, res)
             } else if f.fromSeat == 0 {
+                flying.removeAll { $0.id == id }
                 delegate?.claimBounced(f)
             }
         }
+        // My tosses the host never answered come home and count.
+        for f in flying where f.fromSeat == 0 && !f.bouncing {
+            delegate?.claimBounced(f)
+        }
         flying = []
         outcomes = [:]
+        resolutionOrder = []
         roundActive = false
         awaitingRoundEnd = false
         let local = map.summaryToLocal(globalSummary)

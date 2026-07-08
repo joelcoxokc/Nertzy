@@ -309,7 +309,7 @@ struct TableView: View {
         // home within about two cards of the release point.
         var best: (target: DropTarget, dist: CGFloat)?
         if d.unit.count == 1 {
-            for (i, pile) in engine.foundations.enumerated() where pile.accepts(lead) {
+            for (i, pile) in engine.foundations.enumerated() where engine.pileAccepts(lead, at: i) {
                 let dist = layout.scatterPoint(pile.spot).distance(to: point)
                 if dist < (best?.dist ?? .infinity) { best = (.foundation(i), dist) }
             }
@@ -332,7 +332,7 @@ struct TableView: View {
     /// the nearest pile that takes it, else a fresh pile for an ace.
     private func foundationTarget(for card: Card, near point: CGPoint, layout: TableLayout) -> DropTarget? {
         var best: (idx: Int, dist: CGFloat)?
-        for (i, pile) in engine.foundations.enumerated() where pile.accepts(card) {
+        for (i, pile) in engine.foundations.enumerated() where engine.pileAccepts(card, at: i) {
             let dist = layout.scatterPoint(pile.spot).distance(to: point)
             if dist < (best?.dist ?? .infinity) { best = (i, dist) }
         }

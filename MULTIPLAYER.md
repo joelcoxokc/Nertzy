@@ -116,6 +116,24 @@ the shared host summary and matchID.
 gracefully; no mid-round rejoin in v1), 3–4 player tables, GC leaderboards/
 achievements fed from StatsStore, latency polish.
 
+*3a landed 2026-07-08 (a2bf77d):* guest drop → host settles the round
+(caller −1, "ROUND OVER — X left the table"), next deal seats a bot in
+the empty chair (seatConverted message, name + 🤖); host drop → menu
+with a "closed the table" note.
+
+*3b built 2026-07-08 — latency + ordering, pending device test:*
+replica mutations now apply strictly in host-broadcast order via a
+FIFO drain (two cards racing one pile 0.3s apart could previously
+stack backwards on guests); your own toss settles the instant the
+host's answer arrives instead of on the next tick; `pileAccepts` on
+the seam makes validation pending-aware, so runs (4♥ then 5♥ then 6♥)
+chain onto your own in-flight cards without waiting a round trip —
+if the base bounces the host bounces the chain. Timeouts widened for
+bad wifi (unanswered toss 5s, nerts-call watchdog 8s). Known gap: a
+freshly tossed ACE can't be chained onto until it commits (~RTT) —
+fixing needs client-proposed pile ids + host-side deferred claims;
+do it if it stumbles in play.
+
 ## Stats integration (already built for this)
 
 `StatsStore.record(summary, settings:, match:)` is the one door; a multiplayer
