@@ -26,6 +26,8 @@ protocol TableAuthorityDelegate: AnyObject {
     func roundStarted(round: Int)
     /// A remote player called nerts — end the round with them as caller.
     func remoteNertsCall(seat: Int)
+    /// A departed player's seat is bot-driven from the next round.
+    func seatBecameBot(seat: Int)
     /// The online table died (host left, connection lost) — bail out.
     func tableClosed(reason: String)
 }
@@ -54,10 +56,15 @@ protocol TableAuthority: AnyObject {
     func beginRound()
     /// Settles the round: lands or bounces whatever is still in the
     /// air, tallies, updates scores, records the result, and announces
-    /// it via `roundEnded`.
-    func endRound(caller: Int, recordStats: Bool)
+    /// it via `roundEnded`. `caller` -1 = settled without a call (a
+    /// player left); `note` explains it on the scoreboard.
+    func endRound(caller: Int, recordStats: Bool, note: String?)
     /// The round stops mattering (quit to menu) — no settlement.
     func abandonRound()
+    /// A seat's human is gone; from the next round the host's engine
+    /// plays it. (Solo/guest: nothing to do here — guests learn via
+    /// the seatConverted message.)
+    func convertSeatToBot(seat: Int)
 
     // Foundation plays — the only ways a card reaches the middle.
     /// Your own play. Solo/host: commits instantly. Networked guest:
@@ -152,7 +159,9 @@ final class LocalTableAuthority: TableAuthority {
         roundActive = false
     }
 
-    func endRound(caller: Int, recordStats: Bool) {
+    func convertSeatToBot(seat: Int) {}     // solo seats never leave
+
+    func endRound(caller: Int, recordStats: Bool, note: String?) {
         guard roundActive else { return }
         roundActive = false
         // Cards still in the air when NERTS is called land if they legally
@@ -183,7 +192,8 @@ final class LocalTableAuthority: TableAuthority {
             nertsLeft: left,
             deltas: deltas,
             totals: totals,
-            winner: winner
+            winner: winner,
+            note: note
         )
         summary = result
         if recordStats {

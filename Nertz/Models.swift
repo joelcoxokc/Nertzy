@@ -189,12 +189,13 @@ struct GameSettings {
 // MARK: - Round results
 
 struct RoundSummary: Codable {
-    let caller: Int
+    let caller: Int                 // -1 = nobody called (settled early)
     let foundationCounts: [Int]
     let nertsLeft: [Int]
     let deltas: [Int]
     let totals: [Int]
     let winner: Int?                // set when the match is over (someone reached 100)
+    var note: String? = nil         // e.g. "Bo left the table"
 }
 
 /// An opponent's card in the air. It owns nothing until it lands: the pile

@@ -122,11 +122,13 @@ struct ScoreboardOverlay: View {
 
             VStack(spacing: 20) {
                 VStack(spacing: 4) {
-                    Text("NERTS!")
+                    Text(summary.caller >= 0 ? "NERTS!" : "ROUND OVER")
                         .font(.system(size: 46, weight: .black, design: .rounded))
                         .foregroundStyle(Color(hex: 0xFF5A4E))
                         .shadow(color: .black.opacity(0.4), radius: 6, y: 3)
-                    Text("\(name(summary.caller)) called it")
+                    Text(summary.caller >= 0
+                        ? "\(name(summary.caller)) called it"
+                        : (summary.note ?? "The table settled up"))
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
                         .foregroundStyle(.white.opacity(0.7))
                 }

@@ -24,12 +24,13 @@ struct SeatMap {
         globalToLocal = g2l
     }
 
+    /// Sentinels (like caller -1 = "nobody") pass through unchanged.
     func local(_ g: Int) -> Int {
-        (0..<total).contains(g) ? globalToLocal[g] : 0
+        (0..<total).contains(g) ? globalToLocal[g] : g
     }
 
     func global(_ l: Int) -> Int {
-        (0..<total).contains(l) ? localToGlobal[l] : myGlobal
+        (0..<total).contains(l) ? localToGlobal[l] : l
     }
 
     func localCard(_ w: WireCard) -> Card {
@@ -52,7 +53,8 @@ struct SeatMap {
             nertsLeft: toGlobal(s.nertsLeft),
             deltas: toGlobal(s.deltas),
             totals: toGlobal(s.totals),
-            winner: s.winner.map(global)
+            winner: s.winner.map(global),
+            note: s.note
         )
     }
 
@@ -63,7 +65,8 @@ struct SeatMap {
             nertsLeft: toLocal(s.nertsLeft),
             deltas: toLocal(s.deltas),
             totals: toLocal(s.totals),
-            winner: s.winner.map(local)
+            winner: s.winner.map(local),
+            note: s.note
         )
     }
 }
@@ -92,6 +95,9 @@ final class HostTableAuthority: TableAuthority, TableAuthorityDelegate {
     /// Last self-reported nerts counts for seats living on other
     /// devices (local-indexed) — badge data and the round-end tally.
     private(set) var remoteNerts: [Int?]
+    /// Seats whose humans left; the host's engine plays them now, so
+    /// stale wire reports for them are ignored.
+    @ObservationIgnored private var convertedSeats: Set<Int> = []
 
     init(
         map: SeatMap,
@@ -131,14 +137,21 @@ final class HostTableAuthority: TableAuthority, TableAuthorityDelegate {
         sendMessage(.roundStart(matchID: matchID, round: inner.roundNumber))
     }
 
-    func endRound(caller: Int, recordStats: Bool) {
+    func endRound(caller: Int, recordStats: Bool, note: String?) {
         recordRounds = recordStats
         // The inner table must not write the record book — this wrapper
         // records with the multiplayer seat list instead.
-        inner.endRound(caller: caller, recordStats: false)
+        inner.endRound(caller: caller, recordStats: false, note: note)
     }
 
     func abandonRound() { inner.abandonRound() }
+
+    func convertSeatToBot(seat: Int) {
+        guard !convertedSeats.contains(seat) else { return }
+        convertedSeats.insert(seat)
+        remoteNerts[seat] = nil     // the local board is the truth now
+        sendMessage(.seatConverted(seat: map.global(seat)))
+    }
 
     // MARK: Plays
 
@@ -206,7 +219,7 @@ final class HostTableAuthority: TableAuthority, TableAuthorityDelegate {
             delegate?.remoteNertsCall(seat: map.local(globalSeat))
         case .nertsCount(let globalSeat, let count):
             let local = map.local(globalSeat)
-            if local != 0, local < remoteNerts.count {
+            if local != 0, local < remoteNerts.count, !convertedSeats.contains(local) {
                 remoteNerts[local] = count
             }
         default:
@@ -274,9 +287,10 @@ final class HostTableAuthority: TableAuthority, TableAuthorityDelegate {
         delegate?.tableShuffleCalled()
     }
 
-    // Inner tables never emit these three; conformance completeness.
+    // Inner tables never emit these; conformance completeness.
     func roundStarted(round: Int) {}
     func remoteNertsCall(seat: Int) {}
+    func seatBecameBot(seat: Int) {}
     func tableClosed(reason: String) {}
 
     private func broadcastResolution(
@@ -361,7 +375,7 @@ final class GuestTableAuthority: TableAuthority {
         awaitingRoundEnd = false
     }
 
-    func endRound(caller: Int, recordStats: Bool) {
+    func endRound(caller: Int, recordStats: Bool, note: String?) {
         // My nerts call — the host settles and answers with roundEnd.
         guard roundActive, !awaitingRoundEnd else { return }
         awaitingRoundEnd = true
@@ -374,6 +388,8 @@ final class GuestTableAuthority: TableAuthority {
     }
 
     func abandonRound() { roundActive = false }
+
+    func convertSeatToBot(seat: Int) {}     // guests learn via seatConverted
 
     // MARK: Plays
 
@@ -461,6 +477,8 @@ final class GuestTableAuthority: TableAuthority {
             handleRoundEnd(globalSummary)
         case .tableShuffled:
             delegate?.tableShuffleCalled()
+        case .seatConverted(let globalSeat):
+            delegate?.seatBecameBot(seat: map.local(globalSeat))
         default:
             break
         }

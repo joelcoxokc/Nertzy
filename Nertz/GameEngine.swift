@@ -72,7 +72,8 @@ final class GameEngine {
     }
 
     /// Back to a local solo table (quit, disconnect, match dissolved).
-    func leaveOnlineMatch() {
+    /// `note` explains why on the menu ("Bo closed the table").
+    func leaveOnlineMatch(note: String? = nil) {
         guard isOnline else { return }
         loopTask?.cancel()
         dealTask?.cancel()
@@ -81,12 +82,32 @@ final class GameEngine {
         table.delegate = self
         tableKind = .solo
         aiSeatsOverride = nil
+        pendingBotSeats = []
         seatNames = []
         seatEmojis = []
+        onlineFarewell = note
         phase = .menu
         let handler = onLeaveOnline
         onLeaveOnline = nil
         handler?()
+    }
+
+    /// Why the last online table ended — the menu shows it once.
+    var onlineFarewell: String?
+
+    /// Host only: a guest's human vanished. Settle the round now (the
+    /// scoreboard explains), and from the next deal this engine plays
+    /// their seat — a bot slides into the empty chair.
+    func onlineHumanLeft(seat: Int, name: String) {
+        guard isOnlineHost, seat > 0, seat < playerCount else { return }
+        if phase == .playing {
+            endRound(caller: -1, note: "\(name) left the table")
+        }
+        table.convertSeatToBot(seat: seat)
+        if !pendingBotSeats.contains(seat) {
+            pendingBotSeats.append(seat)
+        }
+        seatBecameBot(seat: seat)
     }
 
     /// One-level undo of your last move.
@@ -116,6 +137,9 @@ final class GameEngine {
     private var onLeaveOnline: (() -> Void)?
     /// Online: which local seats this device simulates as bots.
     private var aiSeatsOverride: [Int]?
+    /// Seats whose humans left mid-round; they join aiSeats at the
+    /// next deal (a fresh board can't appear mid-round).
+    private var pendingBotSeats: [Int] = []
     /// Last badge counts pushed to the table, per seat (online only).
     private var lastReportedNerts: [Int] = []
 
@@ -174,6 +198,11 @@ final class GameEngine {
     func startRound() {
         loopTask?.cancel()
         dealTask?.cancel()
+        // Empty chairs get their bots before the deal.
+        if !pendingBotSeats.isEmpty, aiSeatsOverride != nil {
+            aiSeatsOverride = (aiSeatsOverride ?? []) + pendingBotSeats
+            pendingBotSeats = []
+        }
         table.beginRound()
         pulses = []
         shakeTokens = [:]
@@ -289,7 +318,7 @@ final class GameEngine {
         endRound(caller: 0)
     }
 
-    private func endRound(caller: Int) {
+    private func endRound(caller: Int, note: String? = nil) {
         guard phase == .playing else { return }
         loopTask?.cancel()
         dealTask?.cancel()
@@ -297,7 +326,7 @@ final class GameEngine {
         // The authority settles the race, tallies, and reports back via
         // roundEnded. Demo/quickround rounds aren't genuine play — keep
         // them out of stats.
-        table.endRound(caller: caller, recordStats: !debugDemo && !debugTinyNerts)
+        table.endRound(caller: caller, recordStats: !debugDemo && !debugTinyNerts, note: note)
     }
 
     // MARK: - The AI loop
@@ -722,8 +751,15 @@ extension GameEngine: TableAuthorityDelegate {
         endRound(caller: seat)
     }
 
+    func seatBecameBot(seat: Int) {
+        guard isOnline, seat < seatNames.count else { return }
+        if !seatNames[seat].hasSuffix("🤖") {
+            seatNames[seat] += " 🤖"
+        }
+    }
+
     func tableClosed(reason: String) {
-        leaveOnlineMatch()
+        leaveOnlineMatch(note: reason)
     }
 }
 

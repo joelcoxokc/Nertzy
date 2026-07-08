@@ -260,6 +260,7 @@ struct MenuView: View {
         Button {
             Haptics.fanfare()
             matchmakingError = nil
+            engine.onlineFarewell = nil
             onlineRoute = .matchmaking("auto")
         } label: {
             HStack(spacing: 8) {
@@ -298,6 +299,7 @@ struct MenuView: View {
 
     private var statusMessage: String? {
         if let matchmakingError { return matchmakingError }
+        if let farewell = engine.onlineFarewell { return farewell }
         guard gameCenterOn else { return "Turn on Game Center to play online" }
         switch gameCenter.auth {
         case .failed(let reason): return reason
@@ -308,6 +310,7 @@ struct MenuView: View {
 
     private var statusIsError: Bool {
         if matchmakingError != nil { return true }
+        if engine.onlineFarewell != nil { return true }
         if case .failed = gameCenter.auth { return true }
         return false
     }
