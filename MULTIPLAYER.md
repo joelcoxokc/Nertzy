@@ -42,6 +42,23 @@ without a second device; this de-risks everything after. Touches the hot
 paths (`applyMove`, `launchClaim`/`resolveClaim`, `endRound`, tick) — protect
 the feel: human plays must stay instant in solo.
 
+*Landed 2026-07-08 — `Nertz/TableAuthority.swift`.* `TableAuthority`
+protocol owns all contested state (foundations, flying claims, scores,
+round number, summary) with exactly three doors onto a foundation:
+`playNow` (instant commit — human solo path, host-local later),
+`submitClaim` (in-flight claim — bots today, remote humans in Phase 2),
+`undoFoundationPlay` (rollback — solo undo today, optimistic-commit
+reject path later). `TableAuthorityDelegate` is the host→all stream
+(`claimLanded`/`claimBounced`/`nertsLeftCounts`/`roundEnded`/
+`tableShuffleCalled`), synchronous in solo. `LocalTableAuthority` keeps
+the rules (`landOnFoundation` is still the single mutation primitive,
+`endRound` still the single `StatsStore.record` door). Pacing doors
+(`settleDueClaims`/`checkStuck`/`shiftDeadlines`) are driven from the
+engine's tick/pause so table deadlines stay pause-shifted. GameEngine
+keeps boards, AI, deal, input, presentation; views are untouched (the
+engine forwards `foundations`/`flying`/`scores`/`roundNumber`/`summary`
+as computed reads of the observable authority).
+
 **Phase 1 — GameKit plumbing.** GC capability + App Store Connect config,
 `GKLocalPlayer` auth on launch (behind a setting), matchmaking UI
 (invite/auto-match), seat assignment, message codec, echo test between
