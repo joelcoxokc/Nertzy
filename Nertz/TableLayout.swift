@@ -63,7 +63,7 @@ struct TableLayout {
     func workCardPos(pile: Int, index: Int, count: Int) -> CGPoint {
         let base = workBase(pile)
         guard count > 1 else { return base }
-        let span = min(CGFloat(count - 1) * 24, max(0, fanBottomLimit - workTopY))
+        let span = min(CGFloat(count - 1) * 30, max(0, fanBottomLimit - workTopY))
         let step = span / CGFloat(count - 1)
         return base.offsetBy(0, CGFloat(index) * step)
     }
@@ -71,10 +71,10 @@ struct TableLayout {
     var stockPos: CGPoint { CGPoint(x: colX(4), y: bottomRowY) }
 
     /// depth 0 = top card (closest to the stock), deeper cards fan left —
-    /// spread wide enough that each buried card's corner index shows.
+    /// spread wide enough that each buried card's left-edge rank shows.
     func wastePos(depth: Int) -> CGPoint {
         let d = CGFloat(min(depth, 2))
-        return CGPoint(x: stockPos.x - cardW - 14 - d * 24, y: bottomRowY)
+        return CGPoint(x: stockPos.x - cardW - 14 - d * 28, y: bottomRowY)
     }
 
     // MARK: Seats — bare nerts-count badges pinned to the table edges

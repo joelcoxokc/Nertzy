@@ -42,30 +42,28 @@ struct CardView: View {
     }
 
     private var faceContent: some View {
-        ZStack(alignment: .topLeading) {
-            VStack(spacing: 0) {
-                // Top half: the rank, big.
-                Text(card.rankLabel)
-                    .font(.system(size: width * 0.54, weight: .black))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.65)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.top, width * 0.10)
-                // Bottom half: the suit, big.
-                Text(card.suit.symbol)
-                    .font(.system(size: width * 0.50))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            // Corner index — the sliver you can read when cards are fanned
-            // in a work pile or spread across the waste.
-            HStack(spacing: width * 0.02) {
-                Text(card.rankLabel)
-                    .font(.system(size: width * 0.18, weight: .heavy))
-                Text(card.suit.symbol)
-                    .font(.system(size: width * 0.15, weight: .bold))
-            }
-            .padding(.leading, width * 0.065)
-            .padding(.top, width * 0.045)
+        ZStack {
+            // Rank, big, pinned to the top-left corner — the sliver that
+            // stays readable when the card is buried in the waste fan or
+            // under a work-pile cascade.
+            Text(card.rankLabel)
+                .font(.system(size: width * 0.46, weight: .black))
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .padding(.leading, width * 0.07)
+                .padding(.top, width * 0.01)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            // Suit in the top-right corner, so a cascade strip shows both.
+            Text(card.suit.symbol)
+                .font(.system(size: width * 0.26, weight: .bold))
+                .padding(.trailing, width * 0.07)
+                .padding(.top, width * 0.06)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            // The suit again, big, filling the lower half of the face.
+            Text(card.suit.symbol)
+                .font(.system(size: width * 0.68))
+                .padding(.bottom, width * 0.10)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
         .foregroundStyle(ink)
     }
