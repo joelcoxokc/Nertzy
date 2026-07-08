@@ -10,12 +10,7 @@ final class GameEngine {
     var settings = GameSettings()
     private(set) var phase: Phase = .menu
     private(set) var boards: [PlayerBoard] = []
-    private(set) var foundations: [FoundationPile] = []
-    private(set) var flying: [FlyingCard] = []
     private(set) var pulses: [LandingPulse] = []
-    private(set) var scores: [Int] = []
-    private(set) var roundNumber = 1
-    private(set) var summary: RoundSummary?
     private(set) var dealing = false
     private(set) var banner: BannerMessage?
     private(set) var seatPulse: [Int] = []
@@ -25,6 +20,25 @@ final class GameEngine {
     var debugTinyNerts = false
     /// Debug: the AI also plays your seat — living screenshots/demos (-demo).
     var debugDemo = false
+
+    // MARK: - The shared table (authority seam)
+
+    /// Everything contested lives behind this seam: the foundations,
+    /// in-flight claims, round settlement, scores. Solo play wires up
+    /// the local authority; a networked table swaps in here without
+    /// touching the board sim, input, or presentation around it.
+    private let table: any TableAuthority = LocalTableAuthority()
+
+    var foundations: [FoundationPile] { table.foundations }
+    var flying: [FlyingCard] { table.flying }
+    var scores: [Int] { table.scores }
+    var roundNumber: Int { table.roundNumber }
+    var summary: RoundSummary? { table.summary }
+    var maxFoundations: Int { table.maxFoundations }
+
+    init() {
+        table.delegate = self
+    }
 
     /// One-level undo of your last move.
     struct UndoSnapshot {
@@ -44,23 +58,14 @@ final class GameEngine {
 
     private var aiNextMove: [Date] = []
     private var aiCallAt: [Date?] = []
-    private var lastFoundationPlay = Date()
     private var rng = SystemRandomNumberGenerator()
     private var bannerCounter = 0
     private var pulseCounter = 0
-    private var nextPileID = 0
     private var pausedAt: Date?
-    /// Cards from completed piles cleared off the table — still worth points.
-    private var retired: [Card] = []
     private var loopTask: Task<Void, Never>?
     private var dealTask: Task<Void, Never>?
-    /// Identity of the current match; minted in newMatch and sent to the
-    /// record book with every round, so match boundaries travel in-band
-    /// with results instead of via separate lifecycle calls.
-    private var matchToken = UUID()
 
     var playerCount: Int { settings.opponents + 1 }
-    var maxFoundations: Int { 4 * playerCount }
 
     var nertsReady: Bool {
         phase == .playing && !dealing && !boards.isEmpty && boards[0].nerts.isEmpty
@@ -73,21 +78,15 @@ final class GameEngine {
     // MARK: - Match / round lifecycle
 
     func newMatch() {
-        matchToken = UUID()
-        scores = Array(repeating: 0, count: playerCount)
-        roundNumber = 1
+        table.beginMatch(settings: settings)
         startRound()
     }
 
     func startRound() {
         loopTask?.cancel()
         dealTask?.cancel()
-        summary = nil
-        foundations = []
-        flying = []
+        table.beginRound()
         pulses = []
-        retired = []
-        nextPileID = 0
         shakeTokens = [:]
         paused = false
         pausedAt = nil
@@ -139,7 +138,7 @@ final class GameEngine {
         for p in (debugDemo ? 0 : 1)..<playerCount {
             aiNextMove[p] = now.addingTimeInterval(sampleInterval() * 1.3)
         }
-        lastFoundationPlay = now
+        table.noteActivity()
         startLoop()
     }
 
@@ -148,7 +147,7 @@ final class GameEngine {
         if summary?.winner != nil {
             newMatch()
         } else {
-            roundNumber += 1
+            table.advanceRound()
             startRound()
         }
     }
@@ -156,12 +155,14 @@ final class GameEngine {
     func quitToMenu() {
         loopTask?.cancel()
         dealTask?.cancel()
+        table.abandonRound()
         phase = .menu
     }
 
     /// Pause freezes the AI loop; resuming shifts every AI's schedule
-    /// forward by the pause duration so nobody unleashes a burst of
-    /// queued-up moves the moment play continues.
+    /// (and the table's deadlines) forward by the pause duration so
+    /// nobody unleashes a burst of queued-up moves the moment play
+    /// continues.
     func setPaused(_ on: Bool) {
         guard phase == .playing else { return }
         if on {
@@ -177,10 +178,7 @@ final class GameEngine {
             for i in aiCallAt.indices {
                 aiCallAt[i] = aiCallAt[i]?.addingTimeInterval(delta)
             }
-            for i in flying.indices {
-                flying[i].resolveAt = flying[i].resolveAt.addingTimeInterval(delta)
-            }
-            lastFoundationPlay = lastFoundationPlay.addingTimeInterval(delta)
+            table.shiftDeadlines(by: delta)
             pausedAt = nil
             paused = false
         }
@@ -197,43 +195,10 @@ final class GameEngine {
         loopTask?.cancel()
         dealTask?.cancel()
         dealing = false
-        // Cards still in the air when NERTS is called land if they legally
-        // can; the rest go back to their owner's board (and count against it).
-        for claim in flying where !claim.bouncing {
-            if !commitClaim(claim) {
-                returnToBoard(claim)
-            }
-        }
-        var counts = Array(repeating: 0, count: playerCount)
-        for pile in foundations {
-            for card in pile.cards { counts[card.owner] += 1 }
-        }
-        for card in retired { counts[card.owner] += 1 }
-        let left = boards.map { $0.nerts.count }
-        let deltas = (0..<playerCount).map { counts[$0] - 2 * left[$0] }
-        var totals = scores
-        for i in totals.indices { totals[i] += deltas[i] }
-        scores = totals
-        var winner: Int?
-        if let best = totals.max(), best >= 100 {
-            winner = totals.firstIndex(of: best)
-        }
-        flying = []
-        pulses = []
-        let result = RoundSummary(
-            caller: caller,
-            foundationCounts: counts,
-            nertsLeft: left,
-            deltas: deltas,
-            totals: totals,
-            winner: winner
-        )
-        summary = result
-        // Demo/quickround rounds aren't genuine play — keep them out of stats.
-        if !debugDemo && !debugTinyNerts {
-            StatsStore.shared.record(result, settings: settings, match: matchToken)
-        }
-        phase = .roundEnd
+        // The authority settles the race, tallies, and reports back via
+        // roundEnded. Demo/quickround rounds aren't genuine play — keep
+        // them out of stats.
+        table.endRound(caller: caller, recordStats: !debugDemo && !debugTinyNerts)
     }
 
     // MARK: - The AI loop
@@ -278,15 +243,10 @@ final class GameEngine {
 
         // Settle any claims whose flight time is up. Runs on the tick so it
         // freezes with pause, like every other gameplay deadline.
-        let due = flying.filter { !$0.bouncing && now >= $0.resolveAt }.map(\.id)
-        for id in due {
-            resolveClaim(cardID: id)
-        }
+        table.settleDueClaims(now: now)
 
         // Whole table stuck for a long while — everyone shuffles (house rule).
-        if now.timeIntervalSince(lastFoundationPlay) > 40 {
-            tableShuffle()
-        }
+        table.checkStuck(now: now)
     }
 
     private enum AIAction { case flip, play }
@@ -338,7 +298,7 @@ final class GameEngine {
             }
             boards[p] = b
         }
-        lastFoundationPlay = Date()
+        table.noteActivity()
         showBanner("Table shuffle — top card to the bottom 🔀")
     }
 
@@ -386,7 +346,8 @@ final class GameEngine {
 
         switch target {
         case .foundation(let idx):
-            guard unit.count == 1, landOnFoundation(first, at: idx, spot: spot) != nil else { return false }
+            // Your own play commits instantly — the table mutates right here.
+            guard unit.count == 1, table.playNow(first, at: idx, spot: spot) != nil else { return false }
             removeCards(at: source, player: p)
         case .work(let w):
             guard (0..<4).contains(w) else { return false }
@@ -400,109 +361,16 @@ final class GameEngine {
         return true
     }
 
-    // MARK: - In-flight claims (first card DOWN wins)
-
     /// An opponent throws a card at a foundation. It leaves their board now,
     /// but the pile only updates when the card lands — anyone can take the
     /// spot in the meantime, and the loser's card bounces home.
     private func launchClaim(_ p: Int, source: MoveSource, pileIndex: Int?) -> Bool {
-        guard let unit = cards(at: source, player: p), let card = unit.first,
-              canDrop(unit, on: .foundation(pileIndex)) else { return false }
+        guard let unit = cards(at: source, player: p), unit.count == 1, let card = unit.first,
+              table.submitClaim(card, fromSeat: p, source: source, pileIndex: pileIndex)
+        else { return false }
         removeCards(at: source, player: p)
         seatPulse[p] += 1
-        flying.append(FlyingCard(
-            card: card, fromSeat: p, source: source,
-            pileID: pileIndex.map { foundations[$0].id },
-            spot: pileIndex == nil ? openSpot() : nil,
-            resolveAt: Date().addingTimeInterval(0.68)
-        ))
-        Task {
-            try? await Task.sleep(for: .milliseconds(30))
-            if let i = self.flying.firstIndex(where: { $0.id == card.id }) {
-                self.flying[i].landed = true
-            }
-        }
         return true
-    }
-
-    private func resolveClaim(cardID: String) {
-        guard let idx = flying.firstIndex(where: { $0.id == cardID }) else { return }
-        let claim = flying[idx]
-        if commitClaim(claim) {
-            flying.remove(at: idx)
-        } else {
-            // Beaten to the spot — the card flies home and rejoins the board.
-            returnToBoard(claim)
-            flying[idx].bouncing = true
-            Task {
-                try? await Task.sleep(for: .milliseconds(500))
-                self.flying.removeAll { $0.id == cardID }
-            }
-        }
-    }
-
-    /// Lands a claim if the spot is still legal. The moment of truth.
-    private func commitClaim(_ claim: FlyingCard) -> Bool {
-        var index: Int?
-        if let pileID = claim.pileID {
-            // The pile it was thrown at may have completed and left the table.
-            guard let i = foundations.firstIndex(where: { $0.id == pileID }) else { return false }
-            index = i
-        }
-        guard let landedID = landOnFoundation(claim.card, at: index, spot: claim.spot) else { return false }
-        pulse(at: landedID, owner: claim.fromSeat)
-        Sound.play(.opponent)
-        return true
-    }
-
-    /// The one place a card lands on a foundation — validates and mutates.
-    /// Returns the pile's id, or nil if the spot isn't legal. A nil index
-    /// starts a new pile (aces) wherever `spot` says it was tossed — or
-    /// somewhere open on the felt when nobody aimed.
-    private func landOnFoundation(_ card: Card, at index: Int?, spot: CGPoint? = nil) -> Int? {
-        let id: Int
-        if let index {
-            guard index < foundations.count, foundations[index].accepts(card) else { return nil }
-            foundations[index].cards.append(card)
-            id = foundations[index].id
-            if foundations[index].isComplete {
-                // The king caps the pile: flip it over, then clear it away.
-                retirePile(id)
-            }
-        } else {
-            guard card.rank == 1, foundations.count < maxFoundations else { return nil }
-            id = nextPileID
-            nextPileID += 1
-            foundations.append(FoundationPile(
-                id: id, cards: [card],
-                spot: spot ?? openSpot(),
-                tilt: Double.random(in: -9...9, using: &rng)
-            ))
-        }
-        lastFoundationPlay = Date()
-        return id
-    }
-
-    /// Somewhere on the open felt for a fresh pile — a handful of random
-    /// candidates, keeping the one farthest from the piles already down,
-    /// so the scatter stays readable without ever looking arranged.
-    private func openSpot() -> CGPoint {
-        let taken = foundations.filter { !$0.vanishing }.map(\.spot)
-        var best = CGPoint(x: 0.5, y: 0.4)
-        var bestClearance = -1.0
-        for _ in 0..<12 {
-            let c = CGPoint(
-                x: Double.random(in: 0.04...0.96, using: &rng),
-                y: Double.random(in: 0.04...0.96, using: &rng)
-            )
-            guard !taken.isEmpty else { return c }
-            let clearance = taken.map { Double($0.distance(to: c)) }.min() ?? .infinity
-            if clearance > bestClearance {
-                bestClearance = clearance
-                best = c
-            }
-        }
-        return best
     }
 
     private func returnToBoard(_ claim: FlyingCard) {
@@ -522,28 +390,6 @@ final class GameEngine {
         Task {
             try? await Task.sleep(for: .milliseconds(650))
             self.pulses.removeAll { $0.id == pulseID }
-        }
-    }
-
-    /// A completed pile: flip the king face down, pause, shrink it away,
-    /// then remove it so the table stays uncluttered.
-    private func retirePile(_ pileID: Int) {
-        Task {
-            try? await Task.sleep(for: .seconds(0.9))
-            guard self.phase == .playing,
-                  let i = self.foundations.firstIndex(where: { $0.id == pileID }),
-                  self.foundations[i].isComplete else { return }
-            self.foundations[i].faceDown = true
-            Sound.play(.place)
-            try? await Task.sleep(for: .seconds(1.5))
-            guard self.phase == .playing,
-                  let j = self.foundations.firstIndex(where: { $0.id == pileID }) else { return }
-            self.foundations[j].vanishing = true
-            try? await Task.sleep(for: .milliseconds(400))
-            guard self.phase == .playing,
-                  let k = self.foundations.firstIndex(where: { $0.id == pileID }) else { return }
-            self.retired.append(contentsOf: self.foundations[k].cards)
-            self.foundations.remove(at: k)
         }
     }
 
@@ -679,23 +525,11 @@ final class GameEngine {
     func undoLast() {
         guard phase == .playing, !dealing, !paused, let u = undo else { return }
         if let fe = u.foundationEffect {
-            let index = foundations.firstIndex(where: { $0.id == fe.pileID })
-            let stillReversible = index != nil
-                && !foundations[index!].faceDown
-                && foundations[index!].cards.last?.id == fe.cardID
-                && (!fe.wasNewPile
-                    || (index == foundations.count - 1
-                        && foundations[index!].cards.count == 1))
-            guard stillReversible, let index else {
+            guard table.undoFoundationPlay(pileID: fe.pileID, cardID: fe.cardID, wasNewPile: fe.wasNewPile) else {
                 undo = nil
                 showBanner("Too late to undo — the table moved on")
                 Haptics.nope()
                 return
-            }
-            if fe.wasNewPile {
-                foundations.remove(at: index)
-            } else {
-                foundations[index].cards.removeLast()
             }
         }
         boards[0] = u.board
@@ -728,6 +562,32 @@ final class GameEngine {
         }
         if boards[0].nerts.last == first { return .nertsTop }
         return .wasteTop
+    }
+}
+
+// MARK: - Authority events (the "host → all" stream; local and instant in solo)
+
+extension GameEngine: TableAuthorityDelegate {
+    func claimLanded(_ claim: FlyingCard, on pileID: Int) {
+        pulse(at: pileID, owner: claim.fromSeat)
+        Sound.play(.opponent)
+    }
+
+    func claimBounced(_ claim: FlyingCard) {
+        returnToBoard(claim)
+    }
+
+    func nertsLeftCounts() -> [Int] {
+        boards.map { $0.nerts.count }
+    }
+
+    func roundEnded(_ summary: RoundSummary) {
+        pulses = []
+        phase = .roundEnd
+    }
+
+    func tableShuffleCalled() {
+        tableShuffle()
     }
 }
 
