@@ -108,8 +108,8 @@ struct ScoreboardOverlay: View {
     let engine: GameEngine
     let summary: RoundSummary
 
-    private func name(_ p: Int) -> String { AIProfile.seatName(p) }
-    private func emoji(_ p: Int) -> String { AIProfile.seatEmoji(p) }
+    private func name(_ p: Int) -> String { engine.seatName(p) }
+    private func emoji(_ p: Int) -> String { engine.seatEmoji(p) }
 
     private var confettiDeserved: Bool {
         if let w = summary.winner { return w == 0 }
@@ -143,24 +143,48 @@ struct ScoreboardOverlay: View {
                         .foregroundStyle(Color(hex: 0xFFD166))
                 }
 
-                Button {
-                    engine.advanceFromScoreboard()
-                } label: {
-                    Text(summary.winner != nil ? "NEW MATCH" : "NEXT ROUND")
-                        .font(.system(size: 18, weight: .black, design: .rounded))
-                        .tracking(1.5)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 44)
-                        .padding(.vertical, 14)
-                        .background(
-                            Capsule().fill(LinearGradient(
-                                colors: [Color(hex: 0x3A7BFF), Color(hex: 0x2455C8)],
-                                startPoint: .top, endPoint: .bottom
-                            ))
-                        )
-                        .shadow(color: .black.opacity(0.3), radius: 8, y: 4)
+                if engine.canAdvanceScoreboard {
+                    Button {
+                        engine.advanceFromScoreboard()
+                    } label: {
+                        Text(summary.winner != nil ? "NEW MATCH" : "NEXT ROUND")
+                            .font(.system(size: 18, weight: .black, design: .rounded))
+                            .tracking(1.5)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 44)
+                            .padding(.vertical, 14)
+                            .background(
+                                Capsule().fill(LinearGradient(
+                                    colors: [Color(hex: 0x3A7BFF), Color(hex: 0x2455C8)],
+                                    startPoint: .top, endPoint: .bottom
+                                ))
+                            )
+                            .shadow(color: .black.opacity(0.3), radius: 8, y: 4)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    // Guests wait for the host to deal the next one.
+                    VStack(spacing: 10) {
+                        Text(summary.winner != nil
+                            ? "Waiting for the host…"
+                            : "Waiting for the host to deal…")
+                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.6))
+                        Button {
+                            engine.leaveOnlineMatch()
+                        } label: {
+                            Text("LEAVE TABLE")
+                                .font(.system(size: 13, weight: .heavy, design: .rounded))
+                                .tracking(1)
+                                .foregroundStyle(.white.opacity(0.8))
+                                .padding(.horizontal, 18)
+                                .padding(.vertical, 9)
+                                .background(Capsule().fill(.white.opacity(0.08)))
+                                .overlay(Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
-                .buttonStyle(.plain)
             }
             .padding(26)
             .background(

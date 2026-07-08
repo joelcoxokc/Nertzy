@@ -2,7 +2,7 @@ import SwiftUI
 
 // MARK: - Cards
 
-enum Suit: Int, CaseIterable, Hashable {
+enum Suit: Int, CaseIterable, Hashable, Codable {
     case spades, hearts, diamonds, clubs
 
     var symbol: String {
@@ -85,7 +85,7 @@ struct PlayerBoard {
 
 // MARK: - Moves
 
-enum MoveSource: Equatable {
+enum MoveSource: Equatable, Codable {
     case nertsTop
     case wasteTop
     case work(pile: Int, index: Int)
@@ -188,7 +188,7 @@ struct GameSettings {
 
 // MARK: - Round results
 
-struct RoundSummary {
+struct RoundSummary: Codable {
     let caller: Int
     let foundationCounts: [Int]
     let nertsLeft: [Int]
@@ -202,12 +202,13 @@ struct RoundSummary {
 /// bounces home. First card DOWN wins, like at a real table.
 struct FlyingCard: Identifiable {
     let card: Card
-    let fromSeat: Int               // player index 1+
+    let fromSeat: Int               // seat it left; 0 = your own online throw
     let source: MoveSource          // where it came from, for bounce-backs
     let pileID: Int?                // nil = starting a new pile
     let spot: CGPoint?              // where a new pile will land; nil for existing piles
     var resolveAt: Date             // when the race is decided; pause-shifted
-    var landed = false
+    var landed = false              // your own online throws are born landed:
+                                    // the card slides hand → pile directly
     var bouncing = false            // lost the race, flying home
 
     var id: String { card.id }

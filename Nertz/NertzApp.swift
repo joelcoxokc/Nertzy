@@ -31,6 +31,16 @@ struct RootView: View {
                 engine.setPaused(true)
             }
         }
+        .onChange(of: gameCenter.session != nil) { _, hasSession in
+            // Matchmaking and the lobby keep the screen awake — a locked
+            // phone suspends the app and kills the P2P handshake.
+            // (TableView manages the idle timer itself during play.)
+            if hasSession {
+                UIApplication.shared.isIdleTimerDisabled = true
+            } else if engine.phase == .menu {
+                UIApplication.shared.isIdleTimerDisabled = false
+            }
+        }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .preferredColorScheme(.dark)

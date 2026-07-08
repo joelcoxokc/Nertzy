@@ -30,9 +30,10 @@ struct RoundRecord: Codable {
 }
 
 struct MatchRecord: Codable, Identifiable {
-    /// First-class so vs-bot results never pool with (future) vs-human ones.
+    /// First-class so vs-bot results never pool with vs-human ones.
     enum Mode: Codable, Equatable {
         case solo(Difficulty)
+        case multiplayer
     }
 
     let id: UUID                    // the engine's match token
@@ -83,10 +84,18 @@ final class StatsStore {
     /// the current match: a record is created lazily on the token's first
     /// finished round — so a deal that's quit ten seconds in leaves no
     /// trace, and a round can never leak into a previous match's record.
-    func record(_ summary: RoundSummary, settings: GameSettings, match id: UUID) {
+    /// Multiplayer callers pass their own `mode` and seat list; solo
+    /// callers leave the defaults.
+    func record(
+        _ summary: RoundSummary,
+        settings: GameSettings,
+        match id: UUID,
+        mode: MatchRecord.Mode? = nil,
+        seats: [SeatRecord]? = nil
+    ) {
         guard recordingEnabled else { return }
         if matches.last?.id != id {
-            let seats = (0...settings.opponents).map { p in
+            let seatList = seats ?? (0...settings.opponents).map { p in
                 SeatRecord(
                     kind: p == 0 ? .me : .bot,
                     name: AIProfile.seatName(p),
@@ -96,8 +105,8 @@ final class StatsStore {
             matches.append(MatchRecord(
                 id: id,
                 started: Date(),
-                mode: .solo(settings.difficulty),
-                seats: seats,
+                mode: mode ?? .solo(settings.difficulty),
+                seats: seatList,
                 rounds: [],
                 winnerSeat: nil
             ))

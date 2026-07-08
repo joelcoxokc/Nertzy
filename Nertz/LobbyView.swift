@@ -5,9 +5,15 @@ import SwiftUI
 /// devices. Phase 2 replaces the log with an actual deal.
 struct LobbyView: View {
     let session: MatchSession
+    /// Host only: start the game with this many bot seats.
+    var onStart: ((Int) -> Void)? = nil
     let onLeave: () -> Void
 
+    @State private var botCount = 0
+
     private let seatEmojis = ["🙂", "😎", "🤠", "🥸"]
+
+    private var maxBots: Int { max(0, 4 - session.seats.count) }
 
     var body: some View {
         ZStack {
@@ -24,9 +30,23 @@ struct LobbyView: View {
                         .padding(.top, 10)
                 }
                 Spacer(minLength: 16)
+                if session.iAmHost, maxBots > 0 {
+                    botPicker
+                    Spacer(minLength: 14)
+                }
                 eventLog
                 Spacer(minLength: 16)
-                pingBlock
+                if session.iAmHost {
+                    dealButton
+                    pingButton
+                        .padding(.top, 10)
+                } else {
+                    Text("The host deals the table…")
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.65))
+                        .padding(.bottom, 10)
+                    pingButton
+                }
                 leaveButton
                     .padding(.top, 14)
                 Spacer(minLength: 28)
@@ -34,6 +54,73 @@ struct LobbyView: View {
             .padding(.horizontal, 26)
             .frame(maxWidth: 480)
         }
+    }
+
+    // MARK: Host controls
+
+    private var botPicker: some View {
+        VStack(spacing: 8) {
+            Text("BOTS AT THE TABLE")
+                .font(.system(size: 12, weight: .heavy, design: .rounded))
+                .tracking(2)
+                .foregroundStyle(.white.opacity(0.55))
+            HStack(spacing: 10) {
+                ForEach(0...maxBots, id: \.self) { n in
+                    let selected = botCount == n
+                    Button {
+                        botCount = n
+                        Haptics.flip()
+                    } label: {
+                        VStack(spacing: 3) {
+                            Text(n == 0 ? "—" : AIProfile.roster.prefix(n).map(\.emoji).joined())
+                                .font(.system(size: 17))
+                            Text("\(n)")
+                                .font(.system(size: 17, weight: .heavy, design: .rounded))
+                                .foregroundStyle(.white)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(.white.opacity(selected ? 0.20 : 0.07))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(
+                                    .white.opacity(selected ? 0.85 : 0.12),
+                                    lineWidth: selected ? 2 : 1
+                                )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private var dealButton: some View {
+        Button {
+            Haptics.fanfare()
+            onStart?(botCount)
+        } label: {
+            Text("DEAL EVERYONE IN")
+                .font(.system(size: 18, weight: .black, design: .rounded))
+                .tracking(2)
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 15)
+                .background(
+                    Capsule().fill(LinearGradient(
+                        colors: [Color(hex: 0xE0443A), Color(hex: 0xB4271E)],
+                        startPoint: .top, endPoint: .bottom
+                    ))
+                )
+                .overlay(Capsule().strokeBorder(.white.opacity(0.25), lineWidth: 1.5))
+                .shadow(color: .black.opacity(0.35), radius: 12, y: 6)
+        }
+        .buttonStyle(.plain)
+        .disabled(session.waitingFor > 0 || session.ended)
+        .opacity(session.waitingFor > 0 || session.ended ? 0.4 : 1)
     }
 
     private var header: some View {
@@ -102,37 +189,31 @@ struct LobbyView: View {
         )
     }
 
-    private var pingBlock: some View {
-        VStack(spacing: 10) {
-            if let rtt = session.lastRTT {
-                Text(String(format: "%.0f ms", rtt * 1000))
-                    .font(.system(size: 30, weight: .black, design: .rounded))
-                    .foregroundStyle(Color(hex: 0x7CFFB0))
-                    .contentTransition(.numericText())
+    private var pingButton: some View {
+        Button {
+            Haptics.flip()
+            session.ping()
+        } label: {
+            HStack(spacing: 8) {
+                Text("🏓 PING")
+                    .font(.system(size: 13, weight: .heavy, design: .rounded))
+                    .tracking(1.5)
+                if let rtt = session.lastRTT {
+                    Text(String(format: "%.0f ms", rtt * 1000))
+                        .font(.system(size: 13, weight: .heavy, design: .rounded))
+                        .foregroundStyle(Color(hex: 0x7CFFB0))
+                        .contentTransition(.numericText())
+                }
             }
-            Button {
-                Haptics.flip()
-                session.ping()
-            } label: {
-                Text("PING THE TABLE")
-                    .font(.system(size: 18, weight: .black, design: .rounded))
-                    .tracking(2)
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 15)
-                    .background(
-                        Capsule().fill(LinearGradient(
-                            colors: [Color(hex: 0x2E6BE6), Color(hex: 0x1E4FB8)],
-                            startPoint: .top, endPoint: .bottom
-                        ))
-                    )
-                    .overlay(Capsule().strokeBorder(.white.opacity(0.25), lineWidth: 1.5))
-                    .shadow(color: .black.opacity(0.35), radius: 12, y: 6)
-            }
-            .buttonStyle(.plain)
-            .disabled(session.ended)
-            .opacity(session.ended ? 0.4 : 1)
+            .foregroundStyle(.white.opacity(0.8))
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+            .background(Capsule().fill(.white.opacity(0.08)))
+            .overlay(Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 1))
         }
+        .buttonStyle(.plain)
+        .disabled(session.ended)
+        .opacity(session.ended ? 0.4 : 1)
     }
 
     private var leaveButton: some View {
