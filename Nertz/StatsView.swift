@@ -16,6 +16,7 @@ struct StatsView: View {
                         VStack(spacing: 26) {
                             lifetimeSection
                             speedSection
+                            onlineSection
                             recentSection
                         }
                         .padding(.horizontal, 26)
@@ -98,22 +99,38 @@ struct StatsView: View {
 
     private func speedRow(_ d: Difficulty) -> some View {
         let t = store.tally(d)
-        return HStack(spacing: 12) {
-            Text(d.emoji).font(.system(size: 21))
-            Text(d.label)
+        return recordRow(
+            emoji: d.emoji, label: d.label,
+            matchesWon: t.matchesWon, matchesLost: t.matchesFinished - t.matchesWon,
+            roundsWon: t.roundsWon, roundsPlayed: t.roundsPlayed
+        )
+    }
+
+    /// One line of "who you are against X" — table speeds and humans
+    /// share the same chrome.
+    private func recordRow(
+        emoji: String, label: String,
+        matchesWon: Int, matchesLost: Int,
+        roundsWon: Int, roundsPlayed: Int
+    ) -> some View {
+        HStack(spacing: 12) {
+            Text(emoji).font(.system(size: 21))
+            Text(label)
                 .font(.system(size: 15, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
             Spacer()
-            if t.roundsPlayed == 0 {
+            if roundsPlayed == 0 {
                 Text("—")
                     .font(.system(size: 14, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.3))
             } else {
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text("\(t.matchesWon)–\(t.matchesFinished - t.matchesWon) matches")
+                    Text("\(matchesWon)–\(matchesLost) matches")
                         .font(.system(size: 14, weight: .heavy, design: .rounded))
                         .foregroundStyle(.white)
-                    Text("\(t.roundsWon)/\(t.roundsPlayed) rounds · \(percent(t.roundsWon, t.roundsPlayed))")
+                    Text("\(roundsWon)/\(roundsPlayed) rounds · \(percent(roundsWon, roundsPlayed))")
                         .font(.system(size: 11, weight: .medium, design: .rounded))
                         .foregroundStyle(.white.opacity(0.55))
                 }
@@ -122,6 +139,33 @@ struct StatsView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
         .statsPanel()
+    }
+
+    // MARK: Online
+
+    /// Your record against actual people — hidden until you've played
+    /// someone.
+    @ViewBuilder
+    private var onlineSection: some View {
+        let t = store.tally(mode: .multiplayer)
+        if t.roundsPlayed > 0 {
+            titledSection("VS HUMANS") {
+                VStack(spacing: 8) {
+                    recordRow(
+                        emoji: "🌐", label: "All online play",
+                        matchesWon: t.matchesWon, matchesLost: t.matchesFinished - t.matchesWon,
+                        roundsWon: t.roundsWon, roundsPlayed: t.roundsPlayed
+                    )
+                    ForEach(store.opponentRecords()) { r in
+                        recordRow(
+                            emoji: r.emoji, label: r.name,
+                            matchesWon: r.matchesWon, matchesLost: r.matchesLost,
+                            roundsWon: r.roundsWon, roundsPlayed: r.roundsPlayed
+                        )
+                    }
+                }
+            }
+        }
     }
 
     private var recentSection: some View {
@@ -144,21 +188,30 @@ struct StatsView: View {
             guard m.winnerSeat != nil else { return ("LEFT", Color.white.opacity(0.35)) }
             return won ? ("WON", Color(hex: 0x7CFFB0)) : ("LOST", Color(hex: 0xFF8A7A))
         }()
+        let meta: String = {
+            let tail = "\(m.rounds.count) rd\(m.rounds.count == 1 ? "" : "s") · \(m.started.formatted(date: .abbreviated, time: .omitted))"
+            if m.mode == .multiplayer, let opp = m.humanOpponents.first {
+                return "vs \(opp.name) · \(tail)"
+            }
+            return tail
+        }()
         return HStack(spacing: 10) {
             Text(label)
                 .font(.system(size: 10, weight: .black, design: .rounded))
                 .tracking(1)
                 .foregroundStyle(color)
                 .frame(width: 40, alignment: .leading)
-            Text(m.difficulty?.emoji ?? "♠️")
+            Text(m.mode == .multiplayer ? "🌐" : (m.difficulty?.emoji ?? "♠️"))
                 .font(.system(size: 16))
             Text("\(myScore)–\(bestOpp)")
                 .font(.system(size: 15, weight: .heavy, design: .rounded))
                 .foregroundStyle(.white)
             Spacer()
-            Text("\(m.rounds.count) rd\(m.rounds.count == 1 ? "" : "s") · \(m.started.formatted(date: .abbreviated, time: .omitted))")
+            Text(meta)
                 .font(.system(size: 11, weight: .medium, design: .rounded))
                 .foregroundStyle(.white.opacity(0.5))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)

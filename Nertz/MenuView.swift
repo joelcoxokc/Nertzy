@@ -110,6 +110,10 @@ struct MenuView: View {
             if let session = gameCenter.session, session.ended {
                 gameCenter.session = nil
             }
+            // Dev: jump straight to the record book for screenshots.
+            if ProcessInfo.processInfo.arguments.contains("-showstats") {
+                showStats = true
+            }
         }
     }
 
