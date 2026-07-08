@@ -54,28 +54,10 @@ struct TableView: View {
         }
     }
 
-    // MARK: - Static table chrome (zone, slots, markers)
+    // MARK: - Static table chrome (your slots; the middle is open felt)
 
     @ViewBuilder
     private func tableChrome(_ layout: TableLayout) -> some View {
-        // Foundation zone inset
-        let zoneW = CGFloat(layout.fCols) * (layout.fCardW + layout.fGap) - layout.fGap + 8
-        let zoneH = layout.foundationBottom - layout.foundationTop + 20
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .fill(Color.black.opacity(0.13))
-            .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(.white.opacity(0.07), lineWidth: 1)
-            )
-            .frame(width: zoneW, height: zoneH)
-            .position(x: layout.size.width / 2, y: (layout.foundationTop + layout.foundationBottom) / 2)
-
-        // Ghost slot for the next ace
-        if engine.phase != .menu, engine.foundations.count < layout.capacity {
-            SlotMarker(width: layout.fCardW, label: "A")
-                .position(layout.foundationSlot(engine.foundations.count))
-        }
-
         if let board = engine.boards.first {
             // Nerts pile slot
             SlotMarker(width: layout.cardW, label: "N")
@@ -101,11 +83,9 @@ struct TableView: View {
 
     private func seats(_ layout: TableLayout) -> some View {
         ForEach(1..<engine.playerCount, id: \.self) { p in
-            SeatChip(
-                profile: AIProfile.roster[p - 1],
-                nertsLeft: p < engine.boards.count ? engine.boards[p].nerts.count : 13,
-                score: p < engine.scores.count ? engine.scores[p] : 0,
-                backTint: CardPalette.back(for: p),
+            SeatBadge(
+                count: p < engine.boards.count ? engine.boards[p].nerts.count : 13,
+                tint: CardPalette.back(for: p),
                 calling: engine.aiIsCalling(p),
                 pulse: p < engine.seatPulse.count ? engine.seatPulse[p] : 0
             )
@@ -176,36 +156,41 @@ struct TableView: View {
                 ))
             }
         }
-        // Foundations — top two cards per pile.
-        // Completed piles flip face down, shrink, and leave the table.
+        // Foundations — top two cards per pile, resting wherever they were
+        // tossed. Completed piles flip face down, shrink, and leave the table.
         for (idx, pile) in engine.foundations.enumerated() {
             let visible = Array(pile.cards.suffix(pile.faceDown ? 1 : 2))
+            let pos = layout.scatterPoint(pile.spot)
             for (k, c) in visible.enumerated() {
                 out.append(RC(
-                    id: c.id, card: c, pos: layout.foundationSlot(idx),
+                    id: c.id, card: c, pos: pos,
                     z: 40 + Double(idx) * 2 + Double(k), faceUp: !pile.faceDown,
-                    w: pile.vanishing ? layout.fCardW * 0.1 : layout.fCardW,
-                    rot: tossAngle(for: c),
+                    w: pile.vanishing ? layout.cardW * 0.1 : layout.cardW,
+                    rot: pile.tilt + tossAngle(for: c),
                     opacity: pile.vanishing ? 0 : 1,
                     shadowed: k == visible.count - 1
                 ))
             }
         }
-        // Opponent cards racing in from their seats. A claim aims at its
-        // pile (or the ghost slot for a fresh ace) and flies home if beaten.
+        // Opponent cards racing in from the table edges. A claim aims at its
+        // pile (or the open spot a fresh ace picked) and flies home if beaten.
         for f in engine.flying {
-            let slotIdx = f.pileID.flatMap { pid in
-                engine.foundations.firstIndex(where: { $0.id == pid })
-            } ?? engine.foundations.count
+            let destPos: CGPoint
+            let destRot: Double
+            if let pid = f.pileID, let pile = engine.foundations.first(where: { $0.id == pid }) {
+                destPos = layout.scatterPoint(pile.spot)
+                destRot = pile.tilt + tossAngle(for: f.card)
+            } else {
+                destPos = layout.scatterPoint(f.spot ?? CGPoint(x: 0.5, y: 0.5))
+                destRot = tossAngle(for: f.card)
+            }
             let atSeat = !f.landed || f.bouncing
             out.append(RC(
                 id: f.id, card: f.card,
-                pos: atSeat
-                    ? layout.seatPos(f.fromSeat).offsetBy(0, 18)
-                    : layout.foundationSlot(slotIdx),
+                pos: atSeat ? layout.seatLaunchPos(f.fromSeat) : destPos,
                 z: 6000, faceUp: true,
-                w: atSeat ? layout.fCardW * 0.8 : layout.fCardW,
-                rot: atSeat ? 0 : tossAngle(for: f.card),
+                w: atSeat ? layout.cardW * 0.8 : layout.cardW,
+                rot: atSeat ? 0 : destRot,
                 flight: true,
                 shadowed: true
             ))
@@ -251,6 +236,7 @@ struct TableView: View {
                             : .spring(response: 0.32, dampingFraction: 0.82)),
                     value: rc.pos
                 )
+                .animation(rc.dragging ? nil : .spring(response: 0.32, dampingFraction: 0.82), value: rc.rot)
                 .animation(.spring(response: 0.34, dampingFraction: 0.82), value: rc.faceUp)
                 .animation(.spring(response: 0.35, dampingFraction: 0.85), value: rc.w)
                 .animation(.easeOut(duration: 0.32), value: rc.opacity)
@@ -284,7 +270,13 @@ struct TableView: View {
             }
             .onEnded { _ in
                 guard let d = drag, d.leadID == card.id else { return }
-                engine.humanDrop(source: d.source, target: currentTarget(layout))
+                let target = currentTarget(layout)
+                var spot: CGPoint?
+                if case .foundation(nil)? = target, let base = d.bases[d.leadID] {
+                    // A fresh pile starts right where the card was dropped.
+                    spot = layout.scatterSpot(at: base.adding(d.translation))
+                }
+                engine.humanDrop(source: d.source, target: target, spot: spot)
                 drag = nil
                 hover = nil
             }
@@ -297,16 +289,15 @@ struct TableView: View {
         // Released next to where it was picked up = putting it back.
         guard point.distance(to: base) > layout.cardW * 0.75 else { return nil }
 
-        // The table zone, grown by a full card in every direction (but kept
-        // clear of the work row) — the card finds its own pile.
+        // Anywhere on the open felt (grown by a card, kept clear of the work
+        // row) — a single card finds its own pile out there.
         if d.unit.count == 1 {
-            var zone = layout.foundationZone.insetBy(dx: -layout.cardW, dy: 0)
-            zone.origin.y -= layout.cardW * 0.9
-            zone.size.height += layout.cardW * 0.9
-            let maxY = layout.workTopY - layout.cardH / 2 - 8
-            zone.size.height = min(zone.size.height + layout.cardW * 0.9, maxY - zone.origin.y)
+            var zone = layout.scatterZone.insetBy(dx: -layout.cardW, dy: 0)
+            zone.origin.y -= layout.cardW
+            let maxY = layout.workTopY - layout.cardH * 0.95
+            zone.size.height = min(zone.size.height + layout.cardW * 2, maxY - zone.origin.y)
             if zone.contains(point) {
-                return engine.foundationTarget(for: lead)
+                return foundationTarget(for: lead, near: point, layout: layout)
             }
         }
         // Work pile by geometry, with a wide catch.
@@ -316,11 +307,11 @@ struct TableView: View {
         // Snap-assist: you clearly moved it — send it to the nearest legal
         // home within about two cards of the release point.
         var best: (target: DropTarget, dist: CGFloat)?
-        if d.unit.count == 1, let ft = engine.foundationTarget(for: lead),
-           case .foundation(let idx) = ft {
-            let slot = idx ?? engine.foundations.count
-            let dist = layout.foundationSlot(slot).distance(to: point)
-            if dist < (best?.dist ?? .infinity) { best = (ft, dist) }
+        if d.unit.count == 1 {
+            for (i, pile) in engine.foundations.enumerated() where pile.accepts(lead) {
+                let dist = layout.scatterPoint(pile.spot).distance(to: point)
+                if dist < (best?.dist ?? .infinity) { best = (.foundation(i), dist) }
+            }
         }
         for w in 0..<4 where engine.canDrop(d.unit, on: .work(w)) {
             let count = engine.boards.first?.work[w].count ?? 0
@@ -336,16 +327,31 @@ struct TableView: View {
         return nil
     }
 
+    /// Where a single card dropped at `point` on the open felt should land:
+    /// the nearest pile that takes it, else a fresh pile for an ace.
+    private func foundationTarget(for card: Card, near point: CGPoint, layout: TableLayout) -> DropTarget? {
+        var best: (idx: Int, dist: CGFloat)?
+        for (i, pile) in engine.foundations.enumerated() where pile.accepts(card) {
+            let dist = layout.scatterPoint(pile.spot).distance(to: point)
+            if dist < (best?.dist ?? .infinity) { best = (i, dist) }
+        }
+        if let best { return .foundation(best.idx) }
+        if card.rank == 1, engine.foundations.count < engine.maxFoundations {
+            return .foundation(nil)
+        }
+        return nil
+    }
+
     // MARK: - Landing pulses
 
     private func pulseLayer(_ layout: TableLayout) -> some View {
         ForEach(engine.pulses) { pulse in
-            if let idx = engine.foundations.firstIndex(where: { $0.id == pulse.pileID }) {
+            if let pile = engine.foundations.first(where: { $0.id == pulse.pileID }) {
                 LandingRing(
                     color: CardPalette.back(for: pulse.owner),
-                    cardW: layout.fCardW
+                    cardW: layout.cardW
                 )
-                .position(layout.foundationSlot(idx))
+                .position(layout.scatterPoint(pile.spot))
                 .zIndex(8500)
             }
         }
@@ -360,8 +366,13 @@ struct TableView: View {
             let (pos, w): (CGPoint, CGFloat) = {
                 switch hover {
                 case .foundation(let fi):
-                    let slot = fi ?? engine.foundations.count
-                    return (layout.foundationSlot(slot), layout.fCardW)
+                    if let fi, fi < engine.foundations.count {
+                        return (layout.scatterPoint(engine.foundations[fi].spot), layout.cardW)
+                    }
+                    // A fresh pile lands under the finger — show it there.
+                    let p = d.bases[d.leadID].map { $0.adding(d.translation) }
+                        ?? CGPoint(x: layout.scatterZone.midX, y: layout.scatterZone.midY)
+                    return (layout.scatterPoint(layout.scatterSpot(at: p)), layout.cardW)
                 case .work(let wi):
                     let count = engine.boards.first?.work[wi].count ?? 0
                     let pos = layout.workCardPos(pile: wi, index: max(0, count), count: count + 1)
@@ -464,7 +475,7 @@ struct TableView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 9)
                 .background(Capsule().fill(Color.black.opacity(0.55)))
-                .position(x: layout.size.width / 2, y: layout.foundationTop - 22)
+                .position(x: layout.size.width / 2, y: 92)
                 .zIndex(9500)
                 .transition(.move(edge: .top).combined(with: .opacity))
                 .id(banner.id)

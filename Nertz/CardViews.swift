@@ -128,54 +128,44 @@ struct SlotMarker: View {
     }
 }
 
-// MARK: - Opponent seat chip
+// MARK: - Opponent badge
 
-struct SeatChip: View {
-    let profile: AIProfile
-    let nertsLeft: Int
-    let score: Int
-    let backTint: Color
+/// An opponent, reduced to the one number that matters at the table: how
+/// many cards are left in their nerts pile. A mini card back in their
+/// color, pinned to the table edge, glowing red when they're about to call.
+struct SeatBadge: View {
+    let count: Int
+    let tint: Color
     let calling: Bool
     let pulse: Int
 
     @State private var pulsing = false
 
     var body: some View {
-        HStack(spacing: 7) {
-            Text(profile.emoji)
-                .font(.system(size: 25))
-            VStack(alignment: .leading, spacing: 1) {
-                Text(profile.name)
-                    .font(.system(size: 13, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-                Text("\(score) pts")
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.6))
-            }
-            ZStack {
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(backTint)
-                    .frame(width: 21, height: 29)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .strokeBorder(.white.opacity(0.5), lineWidth: 1)
-                    )
-                Text("\(nertsLeft)")
-                    .font(.system(size: 12, weight: .heavy, design: .rounded))
-                    .foregroundStyle(.white)
-                    .shadow(color: .black.opacity(0.6), radius: 1.5)
-            }
+        ZStack {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(LinearGradient(
+                    colors: [tint, tint.opacity(0.70)],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                ))
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(
+                    calling ? Color(hex: 0xFF5A4E) : .white.opacity(0.5),
+                    lineWidth: calling ? 2.5 : 1.2
+                )
+            Text("\(count)")
+                .font(.system(size: 20, weight: .heavy, design: .rounded))
+                .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.55), radius: 1.5)
+                .minimumScaleFactor(0.6)
+                .padding(.horizontal, 3)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Capsule().fill(Color.black.opacity(calling ? 0.55 : 0.28)))
-        .overlay(
-            Capsule().strokeBorder(
-                calling ? Color(hex: 0xFF5A4E) : .white.opacity(0.15),
-                lineWidth: calling ? 2 : 1
-            )
+        .frame(width: 36, height: 50)
+        .shadow(
+            color: calling ? Color(hex: 0xFF5A4E).opacity(0.85) : .black.opacity(0.35),
+            radius: calling ? 10 : 4, y: 2
         )
-        .scaleEffect(pulsing ? 1.07 : 1.0)
+        .scaleEffect(pulsing ? 1.14 : 1.0)
         .animation(.spring(response: 0.22, dampingFraction: 0.5), value: pulsing)
         .onChange(of: pulse) { _, _ in
             pulsing = true

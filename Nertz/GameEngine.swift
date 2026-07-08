@@ -370,13 +370,13 @@ final class GameEngine {
     }
 
     @discardableResult
-    private func applyMove(_ p: Int, source: MoveSource, target: DropTarget) -> Bool {
+    private func applyMove(_ p: Int, source: MoveSource, target: DropTarget, spot: CGPoint? = nil) -> Bool {
         guard phase == .playing else { return false }
         guard let unit = cards(at: source, player: p), let first = unit.first else { return false }
 
         switch target {
         case .foundation(let idx):
-            guard unit.count == 1, landOnFoundation(first, at: idx) != nil else { return false }
+            guard unit.count == 1, landOnFoundation(first, at: idx, spot: spot) != nil else { return false }
             removeCards(at: source, player: p)
         case .work(let w):
             guard (0..<4).contains(w) else { return false }
@@ -403,6 +403,7 @@ final class GameEngine {
         flying.append(FlyingCard(
             card: card, fromSeat: p, source: source,
             pileID: pileIndex.map { foundations[$0].id },
+            spot: pileIndex == nil ? openSpot() : nil,
             resolveAt: Date().addingTimeInterval(0.68)
         ))
         Task {
@@ -438,7 +439,7 @@ final class GameEngine {
             guard let i = foundations.firstIndex(where: { $0.id == pileID }) else { return false }
             index = i
         }
-        guard let landedID = landOnFoundation(claim.card, at: index) else { return false }
+        guard let landedID = landOnFoundation(claim.card, at: index, spot: claim.spot) else { return false }
         pulse(at: landedID, owner: claim.fromSeat)
         Sound.play(.opponent)
         return true
@@ -446,8 +447,9 @@ final class GameEngine {
 
     /// The one place a card lands on a foundation — validates and mutates.
     /// Returns the pile's id, or nil if the spot isn't legal. A nil index
-    /// starts a new pile (aces).
-    private func landOnFoundation(_ card: Card, at index: Int?) -> Int? {
+    /// starts a new pile (aces) wherever `spot` says it was tossed — or
+    /// somewhere open on the felt when nobody aimed.
+    private func landOnFoundation(_ card: Card, at index: Int?, spot: CGPoint? = nil) -> Int? {
         let id: Int
         if let index {
             guard index < foundations.count, foundations[index].accepts(card) else { return nil }
@@ -461,10 +463,36 @@ final class GameEngine {
             guard card.rank == 1, foundations.count < maxFoundations else { return nil }
             id = nextPileID
             nextPileID += 1
-            foundations.append(FoundationPile(id: id, cards: [card]))
+            foundations.append(FoundationPile(
+                id: id, cards: [card],
+                spot: spot ?? openSpot(),
+                tilt: Double.random(in: -9...9, using: &rng)
+            ))
         }
         lastFoundationPlay = Date()
         return id
+    }
+
+    /// Somewhere on the open felt for a fresh pile — a handful of random
+    /// candidates, keeping the one farthest from the piles already down,
+    /// so the scatter stays readable without ever looking arranged.
+    private func openSpot() -> CGPoint {
+        let taken = foundations.filter { !$0.vanishing }.map(\.spot)
+        var best = CGPoint(x: 0.5, y: 0.4)
+        var bestClearance = -1.0
+        for _ in 0..<12 {
+            let c = CGPoint(
+                x: Double.random(in: 0.04...0.96, using: &rng),
+                y: Double.random(in: 0.04...0.96, using: &rng)
+            )
+            guard !taken.isEmpty else { return c }
+            let clearance = taken.map { Double($0.distance(to: c)) }.min() ?? .infinity
+            if clearance > bestClearance {
+                bestClearance = clearance
+                best = c
+            }
+        }
+        return best
     }
 
     private func returnToBoard(_ claim: FlyingCard) {
@@ -603,13 +631,14 @@ final class GameEngine {
     }
 
     /// `target` is the geometric target under the drop point (unvalidated), or nil
-    /// if the cards were released over nothing.
+    /// if the cards were released over nothing. `spot` is where on the open
+    /// felt the card was dropped, for starting a new pile right there.
     @discardableResult
-    func humanDrop(source: MoveSource, target: DropTarget?) -> DropResult {
+    func humanDrop(source: MoveSource, target: DropTarget?, spot: CGPoint? = nil) -> DropResult {
         guard let target else { return .rejected }
         let snapshot = boards[0]
         let movedCardID = cards(at: source, player: 0)?.first?.id
-        guard applyMove(0, source: source, target: target) else {
+        guard applyMove(0, source: source, target: target, spot: spot) else {
             Haptics.nope()
             return .rejected
         }

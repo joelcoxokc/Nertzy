@@ -42,7 +42,7 @@ struct RootView: View {
                     FoundationPile.completeCount = 3
                 }
                 engine.settings = GameSettings(
-                    opponents: 2,
+                    opponents: args.contains("-threebots") ? 3 : 2,
                     difficulty: args.contains("-frantic") ? .frantic : .classic
                 )
                 engine.newMatch()
