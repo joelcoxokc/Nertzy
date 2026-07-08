@@ -96,6 +96,56 @@ private final class InviteListener: NSObject, GKLocalPlayerListener {
     }
 }
 
+// MARK: - Leaderboards
+
+/// Score reporting — fed from the one StatsStore.record door, so solo
+/// and online rounds both count. Fire-and-forget: Game Center keeps
+/// each player's best, so resubmitting totals is always safe.
+enum LeaderboardReporter {
+    static let winsID = "com.oikos.nerts.wins"
+    static let bestRoundID = "com.oikos.nerts.bestround"
+
+    /// Called once per recorded round. `wonMatchTotal` is the new
+    /// lifetime match-win count when this round decided a match in
+    /// your favor, else nil.
+    static func report(roundDelta: Int, wonMatchTotal: Int?) {
+        guard GKLocalPlayer.local.isAuthenticated else { return }
+        GKLeaderboard.submitScore(
+            roundDelta, context: 0, player: GKLocalPlayer.local,
+            leaderboardIDs: [bestRoundID]
+        ) { _ in }
+        if let wonMatchTotal {
+            GKLeaderboard.submitScore(
+                wonMatchTotal, context: 0, player: GKLocalPlayer.local,
+                leaderboardIDs: [winsID]
+            ) { _ in }
+        }
+    }
+}
+
+/// Apple's leaderboard sheet, wrapped for SwiftUI.
+struct GameCenterBoardsView: UIViewControllerRepresentable {
+    let onDismiss: () -> Void
+
+    func makeUIViewController(context: Context) -> GKGameCenterViewController {
+        let vc = GKGameCenterViewController(state: .leaderboards)
+        vc.gameCenterDelegate = context.coordinator
+        return vc
+    }
+
+    func updateUIViewController(_ uiViewController: GKGameCenterViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, GKGameCenterControllerDelegate {
+        let parent: GameCenterBoardsView
+        init(_ parent: GameCenterBoardsView) { self.parent = parent }
+        func gameCenterViewControllerDidFinish(_ gameCenterViewController: GKGameCenterViewController) {
+            parent.onDismiss()
+        }
+    }
+}
+
 // MARK: - Apple's matchmaking sheet, wrapped for SwiftUI
 
 /// Invite friends or auto-match — GKMatchmakerViewController does both.
