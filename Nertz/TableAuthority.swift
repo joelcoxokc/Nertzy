@@ -21,6 +21,13 @@ protocol TableAuthorityDelegate: AnyObject {
     func roundEnded(_ summary: RoundSummary)
     /// The whole table has been stuck too long — everyone shuffles.
     func tableShuffleCalled()
+    /// A new round is starting table-wide (networked guests get this
+    /// when the host deals; solo never does — the engine deals itself).
+    func roundStarted(round: Int)
+    /// A remote player called nerts — end the round with them as caller.
+    func remoteNertsCall(seat: Int)
+    /// The online table died (host left, connection lost) — bail out.
+    func tableClosed(reason: String)
 }
 
 /// The one owner of everything *contested* in Nertz: the foundations in
@@ -53,17 +60,27 @@ protocol TableAuthority: AnyObject {
     func abandonRound()
 
     // Foundation plays — the only ways a card reaches the middle.
-    /// Instant commit: your own play at a table you're the authority
-    /// for. Returns the pile's id, or nil if the spot isn't legal.
-    func playNow(_ card: Card, at index: Int?, spot: CGPoint?) -> Int?
+    /// Your own play. Solo/host: commits instantly. Networked guest:
+    /// becomes a short claim tossed at the host (the return value is
+    /// provisional). Returns the pile's id, or nil if the spot is
+    /// visibly illegal right now.
+    func playNow(_ card: Card, from source: MoveSource, at index: Int?, spot: CGPoint?) -> Int?
     /// An in-flight claim: the card is in the air now, but the pile
     /// only mutates when it lands — first card DOWN wins, and losers
-    /// bounce home via `claimBounced`. False = illegal at throw time.
-    func submitClaim(_ card: Card, fromSeat: Int, source: MoveSource, pileIndex: Int?) -> Bool
+    /// bounce home via `claimBounced`. `spot` is where a new pile was
+    /// aimed (nil = pick an open spot). False = illegal at throw time.
+    func submitClaim(_ card: Card, fromSeat: Int, source: MoveSource, pileIndex: Int?, spot: CGPoint?, flight: TimeInterval) -> Bool
     /// One-level rollback of an instant commit, if the table hasn't
-    /// moved on. Solo undo today; the reject path for optimistic
-    /// multiplayer commits tomorrow.
+    /// moved on. Solo undo today; always false at a networked table.
     func undoFoundationPlay(pileID: Int, cardID: String, wasNewPile: Bool) -> Bool
+
+    // Private-board reporting — badges for boards nobody else can see.
+    /// The engine reports simulated seats' nerts counts when they
+    /// change; a networked table broadcasts them.
+    func reportNerts(seat: Int, count: Int)
+    /// Last reported count for a seat this device doesn't simulate,
+    /// or nil to read the local board (solo: always nil).
+    func reportedNertsCount(seat: Int) -> Int?
 
     // Pacing — driven from the engine's tick and pause handling, so
     // every table deadline freezes and shifts exactly like the rest
@@ -177,12 +194,12 @@ final class LocalTableAuthority: TableAuthority {
 
     // MARK: Foundation plays
 
-    func playNow(_ card: Card, at index: Int?, spot: CGPoint?) -> Int? {
+    func playNow(_ card: Card, from source: MoveSource, at index: Int?, spot: CGPoint?) -> Int? {
         guard roundActive else { return nil }
         return landOnFoundation(card, at: index, spot: spot)
     }
 
-    func submitClaim(_ card: Card, fromSeat: Int, source: MoveSource, pileIndex: Int?) -> Bool {
+    func submitClaim(_ card: Card, fromSeat: Int, source: MoveSource, pileIndex: Int?, spot: CGPoint?, flight: TimeInterval) -> Bool {
         guard roundActive else { return false }
         if let pileIndex {
             guard pileIndex < foundations.count, foundations[pileIndex].accepts(card) else { return false }
@@ -192,8 +209,8 @@ final class LocalTableAuthority: TableAuthority {
         flying.append(FlyingCard(
             card: card, fromSeat: fromSeat, source: source,
             pileID: pileIndex.map { foundations[$0].id },
-            spot: pileIndex == nil ? openSpot() : nil,
-            resolveAt: Date().addingTimeInterval(0.68)
+            spot: pileIndex == nil ? (spot ?? openSpot()) : nil,
+            resolveAt: Date().addingTimeInterval(flight)
         ))
         Task {
             try? await Task.sleep(for: .milliseconds(30))
@@ -219,6 +236,11 @@ final class LocalTableAuthority: TableAuthority {
         }
         return true
     }
+
+    // MARK: Private-board reporting (solo: nothing to report to)
+
+    func reportNerts(seat: Int, count: Int) {}
+    func reportedNertsCount(seat: Int) -> Int? { nil }
 
     // MARK: Pacing
 

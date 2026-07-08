@@ -11,9 +11,17 @@ struct MenuView: View {
     @State private var onlineRoute: OnlineRoute?
     @State private var matchmakingError: String?
 
-    enum OnlineRoute: String, Identifiable {
-        case matchmaking, lobby
-        var id: String { rawValue }
+    enum OnlineRoute: Identifiable {
+        /// The key varies per invite, so a fresh invite re-presents the
+        /// sheet even if matchmaking was already up.
+        case matchmaking(String)
+        case lobby
+        var id: String {
+            switch self {
+            case .matchmaking(let key): return "matchmaking-\(key)"
+            case .lobby: return "lobby"
+            }
+        }
     }
 
     var body: some View {
@@ -49,7 +57,13 @@ struct MenuView: View {
             switch route {
             case .matchmaking:
                 MatchmakerView(invite: gameCenter.pendingInvite) { match in
-                    gameCenter.session = MatchSession(match: match)
+                    let session = MatchSession(match: match)
+                    // A guest enters the game the moment the host
+                    // announces the seating.
+                    session.onTableConfig = { [weak session] config in
+                        session?.startAsGuest(engine: engine, config: config)
+                    }
+                    gameCenter.session = session
                     gameCenter.pendingInvite = nil
                     onlineRoute = .lobby
                 } onEnd: { error in
@@ -60,18 +74,41 @@ struct MenuView: View {
                 .ignoresSafeArea()
             case .lobby:
                 if let session = gameCenter.session {
-                    LobbyView(session: session) {
-                        session.leave()
-                        gameCenter.session = nil
-                        onlineRoute = nil
-                    }
+                    LobbyView(
+                        session: session,
+                        onStart: { bots in
+                            session.startAsHost(
+                                engine: engine,
+                                botCount: bots,
+                                difficulty: Difficulty(rawValue: difficultyRaw) ?? .classic
+                            )
+                        },
+                        onLeave: {
+                            session.leave()
+                            gameCenter.session = nil
+                            onlineRoute = nil
+                        }
+                    )
                 }
             }
         }
         .onChange(of: gameCenter.pendingInvite) { _, invite in
             // A friend's invite pulls the menu straight into matchmaking.
-            if invite != nil, gameCenter.session == nil {
-                onlineRoute = .matchmaking
+            if let invite, gameCenter.session == nil {
+                onlineRoute = .matchmaking(invite.sender.gamePlayerID)
+            }
+        }
+        .onChange(of: engine.phase) { _, phase in
+            // The game took over — the lobby's job is done.
+            if phase != .menu {
+                onlineRoute = nil
+                showStats = false
+            }
+        }
+        .onAppear {
+            // Back at the menu: a dead session has nothing left to offer.
+            if let session = gameCenter.session, session.ended {
+                gameCenter.session = nil
             }
         }
     }
@@ -223,7 +260,7 @@ struct MenuView: View {
         Button {
             Haptics.fanfare()
             matchmakingError = nil
-            onlineRoute = .matchmaking
+            onlineRoute = .matchmaking("auto")
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "wifi")

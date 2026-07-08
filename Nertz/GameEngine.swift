@@ -25,9 +25,17 @@ final class GameEngine {
 
     /// Everything contested lives behind this seam: the foundations,
     /// in-flight claims, round settlement, scores. Solo play wires up
-    /// the local authority; a networked table swaps in here without
-    /// touching the board sim, input, or presentation around it.
-    private let table: any TableAuthority = LocalTableAuthority()
+    /// the local authority; an online table installs a networked one
+    /// without touching the board sim, input, or presentation.
+    private var table: any TableAuthority = LocalTableAuthority()
+
+    enum TableKind: Equatable { case solo, online(host: Bool) }
+    private(set) var tableKind: TableKind = .solo
+
+    var isOnline: Bool { tableKind != .solo }
+    var isOnlineHost: Bool { tableKind == .online(host: true) }
+    /// Only the host moves the table past the scoreboard online.
+    var canAdvanceScoreboard: Bool { !isOnline || isOnlineHost }
 
     var foundations: [FoundationPile] { table.foundations }
     var flying: [FlyingCard] { table.flying }
@@ -38,6 +46,47 @@ final class GameEngine {
 
     init() {
         table.delegate = self
+    }
+
+    /// Take a seat at an online table. `aiSeats` are the bot seats this
+    /// device simulates (host only), in local seat space (0 = me).
+    func installOnlineTable(
+        _ authority: any TableAuthority,
+        host: Bool,
+        aiSeats: [Int],
+        seatNames: [String],
+        seatEmojis: [String],
+        settings: GameSettings,
+        onLeave: @escaping () -> Void
+    ) {
+        loopTask?.cancel()
+        dealTask?.cancel()
+        self.table = authority
+        authority.delegate = self
+        tableKind = .online(host: host)
+        aiSeatsOverride = aiSeats
+        self.seatNames = seatNames
+        self.seatEmojis = seatEmojis
+        self.settings = settings
+        onLeaveOnline = onLeave
+    }
+
+    /// Back to a local solo table (quit, disconnect, match dissolved).
+    func leaveOnlineMatch() {
+        guard isOnline else { return }
+        loopTask?.cancel()
+        dealTask?.cancel()
+        table.abandonRound()
+        table = LocalTableAuthority()
+        table.delegate = self
+        tableKind = .solo
+        aiSeatsOverride = nil
+        seatNames = []
+        seatEmojis = []
+        phase = .menu
+        let handler = onLeaveOnline
+        onLeaveOnline = nil
+        handler?()
     }
 
     /// One-level undo of your last move.
@@ -64,8 +113,25 @@ final class GameEngine {
     private var pausedAt: Date?
     private var loopTask: Task<Void, Never>?
     private var dealTask: Task<Void, Never>?
+    private var onLeaveOnline: (() -> Void)?
+    /// Online: which local seats this device simulates as bots.
+    private var aiSeatsOverride: [Int]?
+    /// Last badge counts pushed to the table, per seat (online only).
+    private var lastReportedNerts: [Int] = []
 
     var playerCount: Int { settings.opponents + 1 }
+
+    /// Seats whose boards this device actually plays. Solo: every bot
+    /// (plus you, in demo mode). Online host: its bots. Guests: none.
+    private var aiSeats: [Int] {
+        if let aiSeatsOverride { return aiSeatsOverride }
+        return (debugDemo ? [0] : []) + Array(1..<playerCount)
+    }
+
+    /// Whose cards physically exist on this device.
+    private func isSeatSimulated(_ p: Int) -> Bool {
+        p == 0 || aiSeats.contains(p)
+    }
 
     var nertsReady: Bool {
         phase == .playing && !dealing && !boards.isEmpty && boards[0].nerts.isEmpty
@@ -73,6 +139,29 @@ final class GameEngine {
 
     func aiIsCalling(_ p: Int) -> Bool {
         p < aiCallAt.count && aiCallAt[p] != nil
+    }
+
+    // MARK: - Seat identity & badges
+
+    /// Names/emojis for the current table; empty in solo (falls back to
+    /// the bot roster mapping).
+    private(set) var seatNames: [String] = []
+    private(set) var seatEmojis: [String] = []
+
+    func seatName(_ p: Int) -> String {
+        p < seatNames.count ? seatNames[p] : AIProfile.seatName(p)
+    }
+
+    func seatEmoji(_ p: Int) -> String {
+        p < seatEmojis.count ? seatEmojis[p] : AIProfile.seatEmoji(p)
+    }
+
+    /// Edge-badge count for a seat: the real board when it lives here,
+    /// the reported count when it lives on someone else's device.
+    func nertsBadge(_ p: Int) -> Int {
+        if let reported = table.reportedNertsCount(seat: p) { return reported }
+        if isSeatSimulated(p), p < boards.count { return boards[p].nerts.count }
+        return 13
     }
 
     // MARK: - Match / round lifecycle
@@ -94,9 +183,14 @@ final class GameEngine {
         seatPulse = Array(repeating: 0, count: playerCount)
         aiCallAt = Array(repeating: nil, count: playerCount)
         aiNextMove = Array(repeating: .distantFuture, count: playerCount)
+        lastReportedNerts = Array(repeating: -1, count: playerCount)
         boards = (0..<playerCount).map { p in
             var b = PlayerBoard()
-            b.stock = newDeck(owner: p).shuffled(using: &rng)
+            // Remote players deal their own decks on their own devices;
+            // their boards here stay empty (badges use reported counts).
+            if isSeatSimulated(p) {
+                b.stock = newDeck(owner: p).shuffled(using: &rng)
+            }
             return b
         }
         phase = .playing
@@ -105,9 +199,9 @@ final class GameEngine {
     }
 
     private func runDeal() async {
-        // Opponents set up instantly (their tables aren't visible).
+        // Locally simulated opponents set up instantly (not visible).
         let aiNertsCount = debugTinyNerts ? (debugDemo ? 4 : 2) : 13
-        for p in 1..<playerCount {
+        for p in aiSeats where p != 0 {
             var b = boards[p]
             for _ in 0..<aiNertsCount { b.nerts.append(b.stock.removeLast()) }
             for i in 0..<4 { b.work[i].append(b.stock.removeLast()) }
@@ -135,7 +229,7 @@ final class GameEngine {
         guard !Task.isCancelled else { return }
         dealing = false
         let now = Date()
-        for p in (debugDemo ? 0 : 1)..<playerCount {
+        for p in aiSeats {
             aiNextMove[p] = now.addingTimeInterval(sampleInterval() * 1.3)
         }
         table.noteActivity()
@@ -143,7 +237,7 @@ final class GameEngine {
     }
 
     func advanceFromScoreboard() {
-        guard phase == .roundEnd else { return }
+        guard phase == .roundEnd, canAdvanceScoreboard else { return }
         if summary?.winner != nil {
             newMatch()
         } else {
@@ -153,6 +247,10 @@ final class GameEngine {
     }
 
     func quitToMenu() {
+        if isOnline {
+            leaveOnlineMatch()
+            return
+        }
         loopTask?.cancel()
         dealTask?.cancel()
         table.abandonRound()
@@ -164,7 +262,8 @@ final class GameEngine {
     /// nobody unleashes a burst of queued-up moves the moment play
     /// continues.
     func setPaused(_ on: Bool) {
-        guard phase == .playing else { return }
+        // An online table can't be frozen by one player.
+        guard phase == .playing, !isOnline else { return }
         if on {
             guard !paused else { return }
             pausedAt = Date()
@@ -222,7 +321,7 @@ final class GameEngine {
         let now = Date()
         let params = settings.difficulty.params
 
-        for p in (debugDemo ? 0 : 1)..<playerCount {
+        for p in aiSeats {
             if boards[p].nerts.isEmpty {
                 if aiCallAt[p] == nil {
                     aiCallAt[p] = now.addingTimeInterval(Double.random(in: params.callDelay, using: &rng))
@@ -238,6 +337,18 @@ final class GameEngine {
                 let action = performAIMove(p)
                 let base = sampleInterval()
                 aiNextMove[p] = now.addingTimeInterval(action == .flip ? base * 0.55 : base)
+            }
+        }
+
+        // Online: push badge counts for the boards that live here when
+        // they change. (Writes nothing unless a count actually moved.)
+        if isOnline {
+            for p in 0..<playerCount where isSeatSimulated(p) {
+                let count = boards[p].nerts.count
+                if p < lastReportedNerts.count, lastReportedNerts[p] != count {
+                    lastReportedNerts[p] = count
+                    table.reportNerts(seat: p, count: count)
+                }
             }
         }
 
@@ -346,8 +457,9 @@ final class GameEngine {
 
         switch target {
         case .foundation(let idx):
-            // Your own play commits instantly — the table mutates right here.
-            guard unit.count == 1, table.playNow(first, at: idx, spot: spot) != nil else { return false }
+            // Your own play: instant commit at a table you're the
+            // authority for; a short toss at a networked one.
+            guard unit.count == 1, table.playNow(first, from: source, at: idx, spot: spot) != nil else { return false }
             removeCards(at: source, player: p)
         case .work(let w):
             guard (0..<4).contains(w) else { return false }
@@ -366,7 +478,7 @@ final class GameEngine {
     /// spot in the meantime, and the loser's card bounces home.
     private func launchClaim(_ p: Int, source: MoveSource, pileIndex: Int?) -> Bool {
         guard let unit = cards(at: source, player: p), unit.count == 1, let card = unit.first,
-              table.submitClaim(card, fromSeat: p, source: source, pileIndex: pileIndex)
+              table.submitClaim(card, fromSeat: p, source: source, pileIndex: pileIndex, spot: nil, flight: 0.68)
         else { return false }
         removeCards(at: source, player: p)
         seatPulse[p] += 1
@@ -570,11 +682,20 @@ final class GameEngine {
 extension GameEngine: TableAuthorityDelegate {
     func claimLanded(_ claim: FlyingCard, on pileID: Int) {
         pulse(at: pileID, owner: claim.fromSeat)
-        Sound.play(.opponent)
+        // Your own online toss already clicked when you dropped it.
+        if claim.fromSeat != 0 {
+            Sound.play(.opponent)
+        }
     }
 
     func claimBounced(_ claim: FlyingCard) {
+        // Remote players' cards return to boards on their own devices.
+        guard isSeatSimulated(claim.fromSeat) else { return }
         returnToBoard(claim)
+        if claim.fromSeat == 0 {
+            // Your toss lost the race — the card comes home.
+            Haptics.nope()
+        }
     }
 
     func nertsLeftCounts() -> [Int] {
@@ -588,6 +709,21 @@ extension GameEngine: TableAuthorityDelegate {
 
     func tableShuffleCalled() {
         tableShuffle()
+    }
+
+    func roundStarted(round: Int) {
+        // A networked host dealt — deal our own deck to match.
+        guard isOnline else { return }
+        startRound()
+    }
+
+    func remoteNertsCall(seat: Int) {
+        guard isOnline else { return }
+        endRound(caller: seat)
+    }
+
+    func tableClosed(reason: String) {
+        leaveOnlineMatch()
     }
 }
 

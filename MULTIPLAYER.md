@@ -87,6 +87,31 @@ for sandbox play.
 **Phase 2 — Playable 2P.** Wire the protocol into the authority seam: claims,
 badges, nerts call, round/scoreboard sync, rematch. Bots fillable by host.
 
+*Landed 2026-07-08 — played iPhone↔iPad. Invite-path hardening after the
+first session: GameKit's transient `.unknown` connection state is not a
+disconnect (was displayed — and mid-game treated — as one), hello re-sends
+on `.connected` (invites connect after didFind), matchmaking/lobby keep
+the screen awake (auto-lock killed the handshake), and a fresh invite
+re-presents the matchmaker sheet.* `NetworkPlay.swift`:
+`SeatMap` (wire seats are GLOBAL — humans sorted by gamePlayerID, host
+first, bots appended; in memory every device keeps 0 = me, so engine and
+views never learned about global seats), `HostTableAuthority` (wraps
+LocalTableAuthority and sits on its delegate line — remote claims enter
+the same claim pipeline bots use with a 0.3s flight, "first card down"
+= landing at the host's table; every landing/bounce/shuffle/settlement
+broadcasts), `GuestTableAuthority` (strictly host-ordered replica;
+your own play = a short claim born `landed` so the card slides hand →
+pile while the claim races the wire; outcomes queue on `flying` and
+settle through the solo pipeline). Guest plays are optimistic-feel:
+score haptic at drop, rare bounce comes home with a nope. Bots are just
+extra host-simulated seats (lobby picker, up to 4 total). Badges ride
+`nertsCount` self-reports (bounce-adjusted at settlement for the tally);
+host gates NEXT ROUND/rematch; undo of foundation plays returns false
+online ("too late" banner); pause is a leave-confirm online; any human
+disconnect mid-game dissolves the table (rejoin is Phase 3). Stats:
+every device records `.multiplayer` rounds with human(id:) seats from
+the shared host summary and matchID.
+
 **Phase 3 — Hardening + extras.** Disconnect/host-drop handling (end round
 gracefully; no mid-round rejoin in v1), 3–4 player tables, GC leaderboards/
 achievements fed from StatsStore, latency polish.

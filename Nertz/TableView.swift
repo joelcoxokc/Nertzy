@@ -5,6 +5,7 @@ struct TableView: View {
 
     @State private var drag: DragInfo?
     @State private var hover: DropTarget?
+    @State private var confirmLeave = false
 
     struct DragInfo {
         let unit: [Card]
@@ -84,7 +85,7 @@ struct TableView: View {
     private func seats(_ layout: TableLayout) -> some View {
         ForEach(1..<engine.playerCount, id: \.self) { p in
             SeatBadge(
-                count: p < engine.boards.count ? engine.boards[p].nerts.count : 13,
+                count: engine.nertsBadge(p),
                 tint: CardPalette.back(for: p),
                 calling: engine.aiIsCalling(p),
                 pulse: p < engine.seatPulse.count ? engine.seatPulse[p] : 0
@@ -405,11 +406,16 @@ struct TableView: View {
             .position(x: 58, y: layout.statusY)
             .zIndex(9300)
 
-        // Pause, top right
+        // Pause, top right (online: nobody can freeze a live table —
+        // the button offers to leave instead)
         Button {
-            engine.setPaused(true)
+            if engine.isOnline {
+                confirmLeave = true
+            } else {
+                engine.setPaused(true)
+            }
         } label: {
-            Image(systemName: "pause.fill")
+            Image(systemName: engine.isOnline ? "rectangle.portrait.and.arrow.right" : "pause.fill")
                 .font(.system(size: 14, weight: .bold))
                 .foregroundStyle(.white.opacity(0.85))
                 .frame(width: 34, height: 34)
@@ -418,6 +424,16 @@ struct TableView: View {
         .buttonStyle(.plain)
         .position(x: layout.size.width - 32, y: layout.statusY)
         .zIndex(9300)
+        .confirmationDialog(
+            "Leave the table?",
+            isPresented: $confirmLeave,
+            titleVisibility: .visible
+        ) {
+            Button("Leave Match", role: .destructive) {
+                engine.leaveOnlineMatch()
+            }
+            Button("Keep Playing", role: .cancel) {}
+        }
 
         // Stock count
         if let board = engine.boards.first, board.stock.count > 0 {
