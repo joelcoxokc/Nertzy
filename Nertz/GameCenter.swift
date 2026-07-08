@@ -96,6 +96,77 @@ private final class InviteListener: NSObject, GKLocalPlayerListener {
     }
 }
 
+// MARK: - Table codes (join by code — no invites, no friending)
+
+/// A table code is 4 letters + the table size ("KQJZ3"). Everyone who
+/// types the same code lands in the same GameKit matchmaking group —
+/// the code deterministically hashes to `GKMatchRequest.playerGroup`,
+/// and auto-match only pairs requests in the same group. The size
+/// digit matters: all requests must ask for the same player count or
+/// GameKit greedily pairs subsets.
+enum TableCode {
+    private static let letters = Array("ABCDEFGHJKLMNPQRSTUVWXYZ")
+
+    static func generate(humans: Int) -> String {
+        String((0..<4).map { _ in letters.randomElement()! }) + String(humans)
+    }
+
+    static func normalize(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    }
+
+    /// The table size encoded in the code, or nil if it's not a code.
+    static func humans(in code: String) -> Int? {
+        guard code.count == 5,
+              let n = code.last?.wholeNumberValue, (2...4).contains(n),
+              code.dropLast().allSatisfy({ letters.contains($0) })
+        else { return nil }
+        return n
+    }
+
+    /// Deterministic across devices and launches (never hashValue —
+    /// that's randomized per process).
+    static func playerGroup(for code: String) -> Int {
+        var value = 0
+        for scalar in code.unicodeScalars {
+            value = value &* 131 &+ Int(scalar.value)
+        }
+        return (abs(value) % 0x3FFF_FFFF) + 1
+    }
+}
+
+/// Programmatic matchmaking for code tables — no Apple sheet at all.
+@MainActor
+enum CodeMatchmaker {
+    static func start(
+        code: String,
+        onMatch: @escaping (GKMatch) -> Void,
+        onError: @escaping (String) -> Void
+    ) {
+        guard let humans = TableCode.humans(in: code) else {
+            onError("That doesn't look like a table code")
+            return
+        }
+        let request = GKMatchRequest()
+        request.minPlayers = humans
+        request.maxPlayers = humans
+        request.playerGroup = TableCode.playerGroup(for: code)
+        GKMatchmaker.shared().findMatch(for: request) { match, error in
+            Task { @MainActor in
+                if let match {
+                    onMatch(match)
+                } else if let error {
+                    onError(error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    static func cancel() {
+        GKMatchmaker.shared().cancel()
+    }
+}
+
 // MARK: - Leaderboards
 
 /// Score reporting — fed from the one StatsStore.record door, so solo
