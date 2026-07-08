@@ -113,6 +113,11 @@ struct AIProfile {
         AIProfile(name: "Bo", emoji: "🐻"),
         AIProfile(name: "Zoe", emoji: "🐸"),
     ]
+
+    /// Seat 0 is the human; bots fill seats 1+ in roster order. The one
+    /// seat-identity mapping, shared by live UI and persisted match records.
+    static func seatName(_ p: Int) -> String { p == 0 ? "You" : roster[p - 1].name }
+    static func seatEmoji(_ p: Int) -> String { p == 0 ? "🙂" : roster[p - 1].emoji }
 }
 
 enum CardPalette {
@@ -135,7 +140,7 @@ struct DifficultyParams {
     let smart: Bool                     // work-pile shuffling & waste building
 }
 
-enum Difficulty: String, CaseIterable, Identifiable {
+enum Difficulty: String, CaseIterable, Identifiable, Codable {
     case chill, classic, frantic
 
     var id: String { rawValue }

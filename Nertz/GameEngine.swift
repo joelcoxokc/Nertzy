@@ -54,6 +54,10 @@ final class GameEngine {
     private var retired: [Card] = []
     private var loopTask: Task<Void, Never>?
     private var dealTask: Task<Void, Never>?
+    /// Identity of the current match; minted in newMatch and sent to the
+    /// record book with every round, so match boundaries travel in-band
+    /// with results instead of via separate lifecycle calls.
+    private var matchToken = UUID()
 
     var playerCount: Int { settings.opponents + 1 }
     var maxFoundations: Int { 4 * playerCount }
@@ -69,6 +73,7 @@ final class GameEngine {
     // MARK: - Match / round lifecycle
 
     func newMatch() {
+        matchToken = UUID()
         scores = Array(repeating: 0, count: playerCount)
         roundNumber = 1
         startRound()
@@ -215,7 +220,7 @@ final class GameEngine {
         }
         flying = []
         pulses = []
-        summary = RoundSummary(
+        let result = RoundSummary(
             caller: caller,
             foundationCounts: counts,
             nertsLeft: left,
@@ -223,6 +228,11 @@ final class GameEngine {
             totals: totals,
             winner: winner
         )
+        summary = result
+        // Demo/quickround rounds aren't genuine play — keep them out of stats.
+        if !debugDemo && !debugTinyNerts {
+            StatsStore.shared.record(result, settings: settings, match: matchToken)
+        }
         phase = .roundEnd
     }
 
