@@ -11,12 +11,13 @@ struct NertzApp: App {
 
 struct RootView: View {
     @State private var engine = GameEngine()
+    @State private var gameCenter = GameCenterManager()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack {
             if engine.phase == .menu {
-                MenuView(engine: engine)
+                MenuView(engine: engine, gameCenter: gameCenter)
                     .transition(.opacity)
             } else {
                 TableView(engine: engine)
@@ -34,6 +35,11 @@ struct RootView: View {
         .persistentSystemOverlays(.hidden)
         .preferredColorScheme(.dark)
         .onAppear {
+            // Opted in previously — sign in at every launch. (The
+            // -gameCenterOn YES launch arg flips this for dev runs.)
+            if UserDefaults.standard.bool(forKey: GameCenterManager.settingKey) {
+                gameCenter.authenticate()
+            }
             let args = ProcessInfo.processInfo.arguments
             if args.contains("-autostart") {
                 // Dev launches never touch the record book.

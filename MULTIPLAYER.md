@@ -64,6 +64,26 @@ as computed reads of the observable authority).
 (invite/auto-match), seat assignment, message codec, echo test between
 Joel's iPhone and iPad.
 
+*Landed 2026-07-08 — echo test passed between Joel's iPhone and iPad
+(both on iOS 26.5; needs Xcode ≥ 26.6 to deploy to the M4 iPad, and the
+iPad's Game Center runs a second Apple ID since same-account devices
+can't match).* GC entitlement at
+`Support/Nertz.entitlements` (wired into both configs). `GameCenter.swift`:
+`GameCenterManager` (opt-in auth via the menu's GAME CENTER toggle —
+`gameCenterOn` in UserDefaults, `-gameCenterOn YES` for dev runs — plus
+invite listener) and `MatchmakerView` wrapping GKMatchmakerViewController
+(min 2 / max 4, auto-match + invites). `Multiplayer.swift`: `NetMessage`
+(Codable JSON over `.reliable` — hello/ping/pong for now), `OnlineSeat`,
+and `MatchSession` (GKMatch delegate via bridge; deterministic seating =
+everyone sorts gamePlayerIDs, seat 0 hosts — zero negotiation messages).
+`LobbyView.swift`: seats, host crown, connection dots, event log, PING
+button with measured RTT. Menu gets PLAY ONLINE + the toggle; solo flow
+untouched. Test notes: the two devices must be signed into *different*
+Game Center accounts (you can't match with yourself); if auto-match
+errors, enable Game Center for the app record in App Store Connect
+(App Store tab → Game Center) — the entitlement alone usually suffices
+for sandbox play.
+
 **Phase 2 — Playable 2P.** Wire the protocol into the authority seam: claims,
 badges, nerts call, round/scoreboard sync, rematch. Bots fillable by host.
 

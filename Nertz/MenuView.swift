@@ -2,10 +2,19 @@ import SwiftUI
 
 struct MenuView: View {
     let engine: GameEngine
+    let gameCenter: GameCenterManager
 
     @AppStorage("opponents") private var opponents = 2
     @AppStorage("difficulty") private var difficultyRaw = Difficulty.classic.rawValue
+    @AppStorage(GameCenterManager.settingKey) private var gameCenterOn = false
     @State private var showStats = false
+    @State private var onlineRoute: OnlineRoute?
+    @State private var matchmakingError: String?
+
+    enum OnlineRoute: String, Identifiable {
+        case matchmaking, lobby
+        var id: String { rawValue }
+    }
 
     var body: some View {
         ZStack {
@@ -20,8 +29,14 @@ struct MenuView: View {
                 }
                 Spacer(minLength: 26)
                 dealButton
-                statsButton
-                    .padding(.top, 16)
+                playOnlineButton
+                    .padding(.top, 12)
+                onlineStatusLine
+                HStack(spacing: 10) {
+                    statsButton
+                    gameCenterToggle
+                }
+                .padding(.top, 14)
                 Spacer(minLength: 30)
             }
             .padding(.horizontal, 26)
@@ -29,6 +44,35 @@ struct MenuView: View {
         }
         .fullScreenCover(isPresented: $showStats) {
             StatsView()
+        }
+        .fullScreenCover(item: $onlineRoute) { route in
+            switch route {
+            case .matchmaking:
+                MatchmakerView(invite: gameCenter.pendingInvite) { match in
+                    gameCenter.session = MatchSession(match: match)
+                    gameCenter.pendingInvite = nil
+                    onlineRoute = .lobby
+                } onEnd: { error in
+                    gameCenter.pendingInvite = nil
+                    matchmakingError = error
+                    onlineRoute = nil
+                }
+                .ignoresSafeArea()
+            case .lobby:
+                if let session = gameCenter.session {
+                    LobbyView(session: session) {
+                        session.leave()
+                        gameCenter.session = nil
+                        onlineRoute = nil
+                    }
+                }
+            }
+        }
+        .onChange(of: gameCenter.pendingInvite) { _, invite in
+            // A friend's invite pulls the menu straight into matchmaking.
+            if invite != nil, gameCenter.session == nil {
+                onlineRoute = .matchmaking
+            }
         }
     }
 
@@ -169,6 +213,96 @@ struct MenuView: View {
         .buttonStyle(.plain)
     }
 
+    // MARK: Online (multiplayer Phase 1)
+
+    private var canPlayOnline: Bool {
+        gameCenterOn && gameCenter.auth == .authenticated
+    }
+
+    private var playOnlineButton: some View {
+        Button {
+            Haptics.fanfare()
+            matchmakingError = nil
+            onlineRoute = .matchmaking
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "wifi")
+                    .font(.system(size: 15, weight: .black))
+                Text(gameCenterOn && gameCenter.auth == .authenticating ? "CONNECTING…" : "PLAY ONLINE")
+                    .font(.system(size: 17, weight: .black, design: .rounded))
+                    .tracking(2)
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(
+                Capsule().fill(LinearGradient(
+                    colors: [Color(hex: 0x2E6BE6), Color(hex: 0x1E4FB8)],
+                    startPoint: .top, endPoint: .bottom
+                ))
+            )
+            .overlay(Capsule().strokeBorder(.white.opacity(0.25), lineWidth: 1.5))
+            .shadow(color: .black.opacity(0.35), radius: 12, y: 6)
+        }
+        .buttonStyle(.plain)
+        .disabled(!canPlayOnline)
+        .opacity(canPlayOnline ? 1 : 0.4)
+    }
+
+    @ViewBuilder
+    private var onlineStatusLine: some View {
+        if let message = statusMessage {
+            Text(message)
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(statusIsError ? Color(hex: 0xFF9C93) : .white.opacity(0.55))
+                .padding(.top, 8)
+        }
+    }
+
+    private var statusMessage: String? {
+        if let matchmakingError { return matchmakingError }
+        guard gameCenterOn else { return "Turn on Game Center to play online" }
+        switch gameCenter.auth {
+        case .failed(let reason): return reason
+        case .authenticated: return "Signed in as \(gameCenter.localName)"
+        default: return nil
+        }
+    }
+
+    private var statusIsError: Bool {
+        if matchmakingError != nil { return true }
+        if case .failed = gameCenter.auth { return true }
+        return false
+    }
+
+    private var gameCenterToggle: some View {
+        Button {
+            Haptics.flip()
+            gameCenterOn.toggle()
+            matchmakingError = nil
+            if gameCenterOn { gameCenter.authenticate() }
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "gamecontroller.fill")
+                    .font(.system(size: 12, weight: .bold))
+                Text("GAME CENTER")
+                    .font(.system(size: 13, weight: .heavy, design: .rounded))
+                    .tracking(1.5)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                Image(systemName: gameCenterOn ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 14))
+                    .foregroundStyle(gameCenterOn ? Color(hex: 0x7CFFB0) : .white.opacity(0.35))
+            }
+            .foregroundStyle(.white.opacity(0.75))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Capsule().fill(.white.opacity(0.08)))
+            .overlay(Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
     private var statsButton: some View {
         Button {
             Haptics.flip()
@@ -180,9 +314,11 @@ struct MenuView: View {
                 Text("YOUR RECORD")
                     .font(.system(size: 13, weight: .heavy, design: .rounded))
                     .tracking(1.5)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
             }
             .foregroundStyle(.white.opacity(0.75))
-            .padding(.horizontal, 22)
+            .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(Capsule().fill(.white.opacity(0.08)))
             .overlay(Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 1))
