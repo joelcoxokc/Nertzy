@@ -1,44 +1,54 @@
 import SwiftUI
 
-/// Pure geometry for the table. Every pile, slot, and seat maps to a point in
-/// the "table" coordinate space so all cards can live on one canvas and every
-/// movement is a real animated position change.
+/// Pure geometry for the table. Your tableau hugs the bottom of the screen,
+/// the middle is open felt where foundation piles sit wherever they were
+/// tossed, and opponents are pinned to the left/top/right edges. Every pile,
+/// slot, and seat maps to a point in the "table" coordinate space so all
+/// cards live on one canvas and every movement is a real animated position
+/// change.
 struct TableLayout {
     let size: CGSize
     let playerCount: Int    // includes you
 
     // MARK: Card size — one size for every card on the table
 
-    var fGap: CGFloat { 8 }
-    var cardW: CGFloat { min((size.width - 12 - 5 * fGap) / 6, 78) }
+    var cardW: CGFloat { min(size.width * 0.12, 56) }
     var cardH: CGFloat { cardW * 1.42 }
-    var fCardW: CGFloat { cardW }
-    var fCardH: CGFloat { cardH }
-
-    // MARK: Foundation grid
-
-    var capacity: Int { 4 * playerCount }
-    var fCols: Int { 6 }
-    var fRows: Int { Int(ceil(Double(capacity) / Double(fCols))) }
 
     // MARK: Vertical anchors
 
     var statusY: CGFloat { 18 }
-    var seatY: CGFloat { 62 }
-    var foundationTop: CGFloat { 104 }
-    var foundationBottom: CGFloat { foundationTop + CGFloat(fRows) * (fCardH + fGap) - fGap }
-    var workTopY: CGFloat { foundationBottom + 40 + cardH / 2 }
     var bottomRowY: CGFloat { size.height - cardH / 2 - 12 }
+    var workTopY: CGFloat { size.height - cardH * 3.35 }
     var fanBottomLimit: CGFloat { bottomRowY - cardH - 8 }
 
-    /// Generous hit region for "just drop it on the table" foundation plays.
-    var foundationZone: CGRect {
-        let gridW = CGFloat(fCols) * (fCardW + fGap) - fGap
+    // MARK: The open table — piles land wherever they're tossed
+
+    /// Pile spots are stored normalized (0...1 each way) and mapped into
+    /// this rect, so a scatter survives any screen size.
+    var scatterZone: CGRect {
+        let sideInset = 48 + cardW / 2          // clear of the edge badges
+        let top = 84 + cardH / 2                // below the HUD
+        let bottom = workTopY - cardH * 1.35    // clear of your work row
         return CGRect(
-            x: (size.width - gridW) / 2 - 20,
-            y: foundationTop - 34,
-            width: gridW + 40,
-            height: foundationBottom - foundationTop + 68
+            x: sideInset,
+            y: top,
+            width: size.width - sideInset * 2,
+            height: max(cardH, bottom - top)
+        )
+    }
+
+    func scatterPoint(_ spot: CGPoint) -> CGPoint {
+        CGPoint(
+            x: scatterZone.minX + spot.x * scatterZone.width,
+            y: scatterZone.minY + spot.y * scatterZone.height
+        )
+    }
+
+    func scatterSpot(at p: CGPoint) -> CGPoint {
+        CGPoint(
+            x: min(max((p.x - scatterZone.minX) / max(scatterZone.width, 1), 0), 1),
+            y: min(max((p.y - scatterZone.minY) / max(scatterZone.height, 1), 0), 1)
         )
     }
 
@@ -67,32 +77,34 @@ struct TableLayout {
         return CGPoint(x: stockPos.x - cardW - 14 - d * 24, y: bottomRowY)
     }
 
-    // MARK: Foundations
-
-    func rowWidth(_ row: Int) -> CGFloat {
-        let inRow = min(fCols, capacity - row * fCols)
-        return CGFloat(inRow) * (fCardW + fGap) - fGap
-    }
-
-    func foundationSlot(_ i: Int) -> CGPoint {
-        let row = i / fCols
-        let col = i % fCols
-        let x = (size.width - rowWidth(row)) / 2 + fCardW / 2 + CGFloat(col) * (fCardW + fGap)
-        let y = foundationTop + fCardH / 2 + CGFloat(row) * (fCardH + fGap)
-        return CGPoint(x: x, y: y)
-    }
-
-    // MARK: Seats
+    // MARK: Seats — bare nerts-count badges pinned to the table edges
 
     func seatPos(_ seat: Int) -> CGPoint {
-        let n = playerCount - 1
-        return CGPoint(x: size.width * CGFloat(seat) / CGFloat(n + 1), y: seatY)
+        let top = CGPoint(x: size.width / 2, y: 46)
+        let left = CGPoint(x: 26, y: scatterZone.midY)
+        let right = CGPoint(x: size.width - 26, y: scatterZone.midY)
+        let spots: [CGPoint]
+        switch playerCount - 1 {
+        case 1: spots = [top]
+        case 2: spots = [left, right]
+        default: spots = [left, top, right]
+        }
+        return spots[min(max(seat - 1, 0), spots.count - 1)]
+    }
+
+    /// Where an opponent's card enters the table — just inside their badge,
+    /// so the card is never hidden behind it.
+    func seatLaunchPos(_ seat: Int) -> CGPoint {
+        let p = seatPos(seat)
+        if p.x < size.width * 0.25 { return p.offsetBy(36, 0) }
+        if p.x > size.width * 0.75 { return p.offsetBy(-36, 0) }
+        return p.offsetBy(0, 38)
     }
 
     // MARK: Hit testing
 
     func workIndex(at p: CGPoint) -> Int? {
-        guard p.y > foundationBottom + fCardH * 0.7 else { return nil }
+        guard p.y > workTopY - cardH * 1.1 else { return nil }
         var best: (index: Int, dist: CGFloat)?
         for i in 0..<4 {
             let d = abs(workBase(i).x - p.x)

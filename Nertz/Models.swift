@@ -57,6 +57,8 @@ func stacksOnWork(_ card: Card, onto base: Card) -> Bool {
 struct FoundationPile: Identifiable {
     let id: Int             // unique per round — piles can be retired, so never an index
     var cards: [Card]
+    let spot: CGPoint       // where it was tossed — normalized (0...1) in the scatter zone
+    let tilt: Double        // resting angle in degrees; cards land how they land
     var faceDown = false    // completed: the king flipped over
     var vanishing = false   // shrinking off the table
 
@@ -198,6 +200,7 @@ struct FlyingCard: Identifiable {
     let fromSeat: Int               // player index 1+
     let source: MoveSource          // where it came from, for bounce-backs
     let pileID: Int?                // nil = starting a new pile
+    let spot: CGPoint?              // where a new pile will land; nil for existing piles
     var resolveAt: Date             // when the race is decided; pause-shifted
     var landed = false
     var bouncing = false            // lost the race, flying home
