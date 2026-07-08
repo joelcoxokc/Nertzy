@@ -23,6 +23,7 @@ enum NetMessage: Codable {
     case claimResolved(WireResolution)          // host → all
     case nertsCount(seat: Int, count: Int)      // player → all (badges)
     case nertsCalled(seat: Int)                 // player → host
+    case seatConverted(seat: Int)               // host → all: a bot took the chair
 
     func encoded() -> Data? { try? JSONEncoder().encode(self) }
     static func decode(_ data: Data) -> NetMessage? {
@@ -119,6 +120,7 @@ final class MatchSession {
     @ObservationIgnored private var gameplaySink: ((NetMessage) -> Void)?
     @ObservationIgnored private weak var engine: GameEngine?
     @ObservationIgnored private var inGame = false
+    @ObservationIgnored private var seatMap: SeatMap?
 
     /// Deterministic seating: every device sorts the same gamePlayerIDs
     /// the same way, so the whole table agrees on seat order — and on
@@ -248,6 +250,7 @@ final class MatchSession {
         }
 
         self.engine = engine
+        self.seatMap = map
         inGame = true
         engine.installOnlineTable(
             authority,
@@ -293,7 +296,8 @@ final class MatchSession {
             addLog("🪑 Table set: \(config.humans.count) players, \(config.botCount) bots")
             onTableConfig?(config)
         case .roundStart, .roundEnd, .tableShuffled,
-             .playerClaim, .claimResolved, .nertsCount, .nertsCalled:
+             .playerClaim, .claimResolved, .nertsCount, .nertsCalled,
+             .seatConverted:
             gameplaySink?(message)
         }
     }
@@ -314,14 +318,19 @@ final class MatchSession {
     }
 
     func playerDisconnected(id: String, name: String) {
-        if let i = seats.firstIndex(where: { $0.id == id }) {
-            seats[i].connected = false
-        }
+        guard let globalSeat = seats.firstIndex(where: { $0.id == id }) else { return }
+        seats[globalSeat].connected = false
         addLog("🔴 \(name) disconnected")
         waitingFor = match.expectedPlayerCount
-        // Mid-game, a lost human ends the table (rejoin is Phase 3).
-        if inGame {
-            engine?.leaveOnlineMatch()
+        guard inGame else { return }
+        if globalSeat == 0 {
+            // The host is gone — no arbiter, the table closes.
+            engine?.leaveOnlineMatch(note: "\(name) closed the table")
+        } else if iAmHost, let seatMap {
+            // A guest left: settle the round and seat a bot in their
+            // chair from the next deal. Other guests hear it from the
+            // host's roundEnd + seatConverted messages.
+            engine?.onlineHumanLeft(seat: seatMap.local(globalSeat), name: name)
         }
     }
 
