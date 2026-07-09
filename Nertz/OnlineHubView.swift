@@ -5,7 +5,9 @@ import GameKit
 /// loud, or type a friend's code. Apple's friend-invite sheet remains
 /// as a fallback — codes need no friending and no invite plumbing.
 struct OnlineHubView: View {
-    let onMatch: (GKMatch) -> Void
+    /// Second argument: true when this device created the table (it
+    /// gets the deal).
+    let onMatch: (GKMatch, Bool) -> Void
     let onInvites: () -> Void
     let onClose: () -> Void
 
@@ -225,8 +227,12 @@ struct OnlineHubView: View {
     }
 
     private func search(code: String) {
+        let isCreator: Bool = {
+            if case .hosting = state { return true }
+            return false
+        }()
         CodeMatchmaker.start(code: code) { match in
-            onMatch(match)
+            onMatch(match, isCreator)
         } onError: { message in
             errorText = message
             state = .idle

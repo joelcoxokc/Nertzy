@@ -69,13 +69,16 @@ struct MenuView: View {
             switch route {
             case .hub:
                 OnlineHubView(
-                    onMatch: { adoptMatch($0) },
+                    onMatch: { match, isCreator in
+                        adoptMatch(match, initiator: isCreator)
+                    },
                     onInvites: { onlineRoute = .matchmaking("invite-ui") },
                     onClose: { onlineRoute = nil }
                 )
             case .matchmaking:
                 MatchmakerView(invite: gameCenter.pendingInvite) { match in
-                    adoptMatch(match)
+                    // Inviter initiated; an accepted invite didn't.
+                    adoptMatch(match, initiator: gameCenter.pendingInvite == nil)
                 } onEnd: { error in
                     gameCenter.pendingInvite = nil
                     matchmakingError = error
@@ -131,12 +134,16 @@ struct MenuView: View {
     }
 
     /// A found match — by code or by invite — becomes the session the
-    /// lobby runs on.
-    private func adoptMatch(_ match: GKMatch) {
+    /// lobby runs on. The initiator (code creator, invite sender)
+    /// claims the deal.
+    private func adoptMatch(_ match: GKMatch, initiator: Bool) {
         let session = MatchSession(match: match)
         // A guest enters the game the moment the host announces seating.
         session.onTableConfig = { [weak session] config in
             session?.startAsGuest(engine: engine, config: config)
+        }
+        if initiator {
+            session.claimTheDeal()
         }
         gameCenter.session = session
         gameCenter.pendingInvite = nil

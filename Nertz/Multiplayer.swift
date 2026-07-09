@@ -13,6 +13,10 @@ enum NetMessage: Codable {
     case hello(name: String)
     case ping(id: UUID)
     case pong(id: UUID)
+    /// Whoever created the table (cut the code, sent the invite) gets
+    /// the deal. Ties (pure auto-match, both initiated) break to the
+    /// lowest claiming id — same rule on every device.
+    case claimHost(id: String)
     // Table lifecycle (host → all)
     case tableConfig(TableConfig)
     case roundStart(matchID: UUID, round: Int)
@@ -122,12 +126,34 @@ final class MatchSession {
     @ObservationIgnored private var inGame = false
     @ObservationIgnored private var seatMap: SeatMap?
 
-    /// Deterministic seating: every device sorts the same gamePlayerIDs
-    /// the same way, so the whole table agrees on seat order — and on
-    /// the host (seat 0, lowest id) — without a negotiation message.
+    /// The player with the deal. Whoever created the table claims it
+    /// (claimHost); until a claim lands — or if nobody claims (pure
+    /// auto-match) — it falls back to the lowest gamePlayerID, a rule
+    /// every device computes identically. The seating the host
+    /// broadcasts in tableConfig is what finally binds everyone.
+    private(set) var hostID: String?
+    @ObservationIgnored private var isInitiator = false
+
     var mySeat: Int { seats.firstIndex(where: \.isLocal) ?? 0 }
-    var hostSeat: Int { 0 }
+    var hostSeat: Int {
+        hostID.flatMap { id in seats.firstIndex(where: { $0.id == id }) } ?? 0
+    }
     var iAmHost: Bool { mySeat == hostSeat }
+
+    /// I created this table — announce that the deal is mine.
+    func claimTheDeal() {
+        isInitiator = true
+        registerHostClaim(GKLocalPlayer.local.gamePlayerID)
+        send(.claimHost(id: GKLocalPlayer.local.gamePlayerID))
+    }
+
+    private func registerHostClaim(_ id: String) {
+        if let current = hostID {
+            hostID = min(current, id)
+        } else {
+            hostID = id
+        }
+    }
 
     init(match: GKMatch) {
         self.match = match
@@ -178,8 +204,12 @@ final class MatchSession {
     // MARK: Starting the game (Phase 2)
 
     /// Host: announce the table (seating + bots + speed) and deal.
+    /// The host seats itself first — tableConfig's order IS the global
+    /// seating, so whoever sends it becomes seat 0 everywhere.
     func startAsHost(engine: GameEngine, botCount: Int, difficulty: Difficulty) {
-        let humans = seats.map { TableConfig.HumanSeat(id: $0.id, name: $0.name) }
+        let me = seats.filter(\.isLocal)
+        let others = seats.filter { !$0.isLocal }
+        let humans = (me + others).map { TableConfig.HumanSeat(id: $0.id, name: $0.name) }
         let config = TableConfig(
             humans: humans,
             botCount: botCount,
@@ -195,6 +225,7 @@ final class MatchSession {
     }
 
     private func beginGame(engine: GameEngine, config: TableConfig) {
+        guard !inGame else { return }    // first announced table wins
         let humans = config.humans
         let total = humans.count + config.botCount
         guard total >= 2, total <= 4,
@@ -283,6 +314,12 @@ final class MatchSession {
         switch message {
         case .hello(let n):
             addLog("👋 \(n) is at the table")
+        case .claimHost(let id):
+            let hadDeal = iAmHost
+            registerHostClaim(id)
+            if hadDeal != iAmHost || hostID == id {
+                addLog("👑 \(name) has the deal")
+            }
         case .ping(let id):
             send(.pong(id: id))
             addLog("📨 ping from \(name) — answered")
@@ -313,8 +350,12 @@ final class MatchSession {
         addLog("🟢 \(name) connected")
         waitingFor = match.expectedPlayerCount
         // Greet over the now-open pipe (invite flows connect after the
-        // match is found, so the hello from init can miss).
+        // match is found, so the hello from init can miss) — and
+        // restate the deal for anyone who missed the claim.
         send(.hello(name: GKLocalPlayer.local.displayName))
+        if isInitiator {
+            send(.claimHost(id: GKLocalPlayer.local.gamePlayerID))
+        }
     }
 
     func playerDisconnected(id: String, name: String) {
