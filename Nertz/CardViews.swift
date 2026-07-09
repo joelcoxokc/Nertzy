@@ -45,9 +45,9 @@ struct CardView: View {
         ZStack {
             // Rank, big, pinned to the top-left corner — the sliver that
             // stays readable when the card is buried in the waste fan or
-            // under a work-pile cascade.
+            // under a work-pile cascade. Times, like a real deck.
             Text(card.rankLabel)
-                .font(.system(size: width * 0.46, weight: .black))
+                .font(.custom("TimesNewRomanPS-BoldMT", size: width * 0.50))
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
                 .padding(.leading, width * 0.07)

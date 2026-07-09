@@ -342,7 +342,7 @@ final class LocalTableAuthority: TableAuthority {
             nextPileID += 1
             foundations.append(FoundationPile(
                 id: id, cards: [card],
-                spot: spot ?? openSpot(),
+                spot: separatedSpot(spot ?? openSpot()),
                 tilt: Double.random(in: -9...9, using: &rng)
             ))
         }
@@ -370,6 +370,35 @@ final class LocalTableAuthority: TableAuthority {
             }
         }
         return best
+    }
+
+    /// Two piles tossed near the same spot bury each other. If the desired
+    /// spot would overlap a pile already on the felt, walk outward in rings
+    /// and take the nearest clear patch, so every pile stays readable.
+    /// Deterministic on purpose: the host broadcasts the resolved spot.
+    private func separatedSpot(_ requested: CGPoint) -> CGPoint {
+        let taken = foundations.filter { !$0.vanishing }.map(\.spot)
+        // A card covers roughly this much of the scatter zone on the
+        // smallest screens; closer than this in both axes = overlap.
+        let minDX = 0.21
+        let minDY = 0.18
+        func isClear(_ p: CGPoint) -> Bool {
+            taken.allSatisfy { abs($0.x - p.x) >= minDX || abs($0.y - p.y) >= minDY }
+        }
+        func clamped(_ p: CGPoint) -> CGPoint {
+            CGPoint(x: min(max(p.x, 0.03), 0.97), y: min(max(p.y, 0.03), 0.97))
+        }
+        let want = clamped(requested)
+        if isClear(want) { return want }
+        for ring in 1...9 {
+            let r = Double(ring) * 0.11
+            for k in 0..<16 {
+                let a = (Double(k) + Double(ring) * 0.5) / 16 * 2 * .pi
+                let c = clamped(CGPoint(x: want.x + cos(a) * r, y: want.y + sin(a) * r * 0.82))
+                if isClear(c) { return c }
+            }
+        }
+        return want
     }
 
     /// A completed pile: flip the king face down, pause, shrink it away,

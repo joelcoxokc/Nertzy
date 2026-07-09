@@ -15,6 +15,9 @@ final class GameEngine {
     private(set) var banner: BannerMessage?
     private(set) var seatPulse: [Int] = []
     var shakeTokens: [String: Int] = [:]
+    /// Cards that just flipped off the stock — they appear on the waste in
+    /// place, with no travel or flip animation. Cleared on the next pickup.
+    var freshWasteIDs: Set<String> = []
     private(set) var paused = false
     /// Debug: deal opponents a 2-card nerts pile so rounds end fast (-quickround).
     var debugTinyNerts = false
@@ -224,6 +227,7 @@ final class GameEngine {
         }
         phase = .playing
         dealing = true
+        freshWasteIDs = []      // card ids repeat across rounds
         dealTask = Task { await self.runDeal() }
     }
 
@@ -542,10 +546,15 @@ final class GameEngine {
             guard !b.waste.isEmpty else { return }
             b.stock = b.waste.reversed()
             b.waste = []
+            if p == 0 { freshWasteIDs = [] }
         } else {
+            var flipped: Set<String> = []
             for _ in 0..<min(3, b.stock.count) {
-                b.waste.append(b.stock.removeLast())
+                let c = b.stock.removeLast()
+                flipped.insert(c.id)
+                b.waste.append(c)
             }
+            if p == 0 { freshWasteIDs = flipped }
         }
         boards[p] = b
     }
@@ -559,6 +568,7 @@ final class GameEngine {
         flipStock(0)
         undo = UndoSnapshot(board: snapshot, foundationEffect: nil)
         Haptics.flip()
+        Sound.play(.flip)
     }
 
     func handleTap(on card: Card) {

@@ -20,7 +20,6 @@ struct TableLayout {
     var statusY: CGFloat { 18 }
     var bottomRowY: CGFloat { size.height - cardH / 2 - 12 }
     var workTopY: CGFloat { size.height - cardH * 3.35 }
-    var fanBottomLimit: CGFloat { bottomRowY - cardH - 8 }
 
     // MARK: The open table — piles land wherever they're tossed
 
@@ -52,30 +51,49 @@ struct TableLayout {
         )
     }
 
-    // MARK: Player columns — work piles left, nerts pile at the right thumb
+    // MARK: Player columns — work piles hug the left, nerts pile at the right thumb
 
-    var colGap: CGFloat { (size.width - 24 - 5 * cardW) / 4 }
+    var colGap: CGFloat { 12 }
     func colX(_ i: Int) -> CGFloat { 12 + cardW / 2 + CGFloat(i) * (cardW + colGap) }
+    var rightColX: CGFloat { size.width - 12 - cardW / 2 }
 
-    var nertsPos: CGPoint { CGPoint(x: colX(4), y: workTopY) }
+    var nertsPos: CGPoint { CGPoint(x: rightColX, y: workTopY) }
     func workBase(_ i: Int) -> CGPoint { CGPoint(x: colX(i), y: workTopY) }
+
+    /// How deep a column's fan may run. The raised waste hangs over the
+    /// right end of the fan zone, so a column beneath it stops higher.
+    func fanBottomLimit(_ pile: Int) -> CGFloat {
+        let wasteLeft = wastePos(depth: 2).x - cardW / 2
+        return colX(pile) + cardW / 2 >= wasteLeft - 6
+            ? wasteY - cardH - 8
+            : bottomRowY - cardH - 8
+    }
 
     func workCardPos(pile: Int, index: Int, count: Int) -> CGPoint {
         let base = workBase(pile)
         guard count > 1 else { return base }
-        let span = min(CGFloat(count - 1) * 30, max(0, fanBottomLimit - workTopY))
+        let span = min(CGFloat(count - 1) * 30, max(0, fanBottomLimit(pile) - workTopY))
         let step = span / CGFloat(count - 1)
         return base.offsetBy(0, CGFloat(index) * step)
     }
 
-    var stockPos: CGPoint { CGPoint(x: colX(4), y: bottomRowY) }
+    var stockPos: CGPoint { CGPoint(x: rightColX, y: bottomRowY) }
+
+    /// The waste rides above the undo/pause row, clear of the screen bottom.
+    var wasteY: CGFloat { size.height - 60 - cardH / 2 }
 
     /// depth 0 = top card (closest to the stock), deeper cards fan left —
     /// spread wide enough that each buried card's left-edge rank shows.
     func wastePos(depth: Int) -> CGPoint {
         let d = CGFloat(min(depth, 2))
-        return CGPoint(x: stockPos.x - cardW - 14 - d * 28, y: bottomRowY)
+        return CGPoint(x: stockPos.x - cardW - 14 - d * 28, y: wasteY)
     }
+
+    // MARK: Buttons — undo and pause tucked under the waste fan
+
+    var buttonRowY: CGFloat { size.height - 32 }
+    var undoPos: CGPoint { CGPoint(x: wastePos(depth: 1).x + 27, y: buttonRowY) }
+    var pausePos: CGPoint { CGPoint(x: wastePos(depth: 1).x - 27, y: buttonRowY) }
 
     // MARK: Seats — bare nerts-count badges pinned to the table edges
 

@@ -2,10 +2,12 @@ import AVFoundation
 import UIKit
 
 /// Procedurally synthesized card sounds — no audio assets required.
-/// Short filtered-noise bursts (the card hitting felt) layered with a low
-/// sine thump. Four random variants per sound so repeated plays feel
-/// physical rather than mechanical. Uses the .ambient session category:
-/// respects the silent switch and mixes with the user's own music.
+/// Each sound is a bright band-passed "snap" (the card flexing as it's
+/// slapped down) followed by a softer brush of noise (settling onto the
+/// felt), with only a whisper of low body — papery, not thumpy. Four
+/// random variants per sound so repeated plays feel physical rather than
+/// mechanical. Uses the .ambient session category: respects the silent
+/// switch and mixes with the user's own music.
 @MainActor
 enum Sound {
 
@@ -111,25 +113,41 @@ enum Sound {
 
     private struct Spec {
         let duration: Double    // seconds
-        let noiseTau: Double    // noise envelope decay
-        let lowpass: Double     // one-pole coefficient, higher = brighter
-        let thumpFreq: Double   // low sine "body", 0 = none
-        let thumpTau: Double
+        let snapTau: Double     // the snap's decay — shorter = crisper
+        let hpFreq: Double      // band-pass low edge (Hz): cuts the boom
+        let lpFreq: Double      // band-pass high edge (Hz): cuts the hiss
+        let ticks: Int          // extra micro-snaps (several cards at once)
+        let tickGap: Double     // seconds between micro-snaps
+        let settleGain: Double  // the softer felt-brush after the snap
+        let settleTau: Double
+        let bodyFreq: Double    // faint knock of the table, 0 = none
+        let bodyGain: Double
         let peak: Double        // normalized output level
     }
 
     private static func spec(for kind: Kind) -> Spec {
         switch kind {
         case .place:
-            return Spec(duration: 0.070, noiseTau: 0.013, lowpass: 0.16, thumpFreq: 175, thumpTau: 0.020, peak: 0.62)
+            return Spec(duration: 0.085, snapTau: 0.0042, hpFreq: 1300, lpFreq: 6200,
+                        ticks: 1, tickGap: 0, settleGain: 0.50, settleTau: 0.016,
+                        bodyFreq: 290, bodyGain: 0.22, peak: 0.60)
         case .score:
-            return Spec(duration: 0.080, noiseTau: 0.015, lowpass: 0.24, thumpFreq: 245, thumpTau: 0.022, peak: 0.70)
+            return Spec(duration: 0.090, snapTau: 0.0048, hpFreq: 1500, lpFreq: 7800,
+                        ticks: 1, tickGap: 0, settleGain: 0.45, settleTau: 0.018,
+                        bodyFreq: 330, bodyGain: 0.20, peak: 0.72)
         case .flip:
-            return Spec(duration: 0.040, noiseTau: 0.008, lowpass: 0.30, thumpFreq: 0, thumpTau: 1, peak: 0.34)
+            // Three cards riffle past: three quick ticks, no table knock.
+            return Spec(duration: 0.110, snapTau: 0.0030, hpFreq: 1700, lpFreq: 7500,
+                        ticks: 3, tickGap: 0.024, settleGain: 0.30, settleTau: 0.012,
+                        bodyFreq: 0, bodyGain: 0, peak: 0.42)
         case .opponent:
-            return Spec(duration: 0.060, noiseTau: 0.011, lowpass: 0.14, thumpFreq: 205, thumpTau: 0.018, peak: 0.30)
+            return Spec(duration: 0.075, snapTau: 0.0040, hpFreq: 900, lpFreq: 4200,
+                        ticks: 1, tickGap: 0, settleGain: 0.50, settleTau: 0.014,
+                        bodyFreq: 260, bodyGain: 0.16, peak: 0.30)
         case .deal:
-            return Spec(duration: 0.035, noiseTau: 0.007, lowpass: 0.28, thumpFreq: 0, thumpTau: 1, peak: 0.22)
+            return Spec(duration: 0.045, snapTau: 0.0026, hpFreq: 1500, lpFreq: 7000,
+                        ticks: 1, tickGap: 0, settleGain: 0.25, settleTau: 0.009,
+                        bodyFreq: 0, bodyGain: 0, peak: 0.24)
         }
     }
 
@@ -140,8 +158,11 @@ enum Sound {
     ) -> AVAudioPCMBuffer? {
         let base = spec(for: kind)
         let sr = format.sampleRate
-        let noiseTau = base.noiseTau * Double.random(in: 0.85...1.15, using: &rng)
-        let thumpFreq = base.thumpFreq * Double.random(in: 0.92...1.08, using: &rng)
+        let snapTau = base.snapTau * Double.random(in: 0.80...1.25, using: &rng)
+        let tickGap = base.tickGap * Double.random(in: 0.85...1.20, using: &rng)
+        let hpFreq = base.hpFreq * Double.random(in: 0.85...1.15, using: &rng)
+        let lpFreq = base.lpFreq * Double.random(in: 0.85...1.15, using: &rng)
+        let bodyFreq = base.bodyFreq * Double.random(in: 0.90...1.10, using: &rng)
 
         let frameCount = AVAudioFrameCount(sr * base.duration)
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount),
@@ -149,23 +170,37 @@ enum Sound {
         buffer.frameLength = frameCount
 
         let frames = Int(frameCount)
-        var lowpassed = 0.0
+        let kLP = 1 - exp(-2 * .pi * lpFreq / sr)
+        let kHP = 1 - exp(-2 * .pi * hpFreq / sr)
+        // The settle starts just after the last tick's snap.
+        let settleStart = Double(base.ticks - 1) * tickGap + 0.006
+        var lp = 0.0
+        var hpTrack = 0.0
         var maxAbs = 0.0001
         var raw = [Double](repeating: 0, count: frames)
-        let attackFrames = max(1.0, sr * 0.0012)
         let releaseFrames = max(1.0, sr * 0.004)
 
         for i in 0..<frames {
             let t = Double(i) / sr
-            let noise = Double.random(in: -1...1, using: &rng) * exp(-t / noiseTau)
-            lowpassed += base.lowpass * (noise - lowpassed)
-            var sample = lowpassed * 1.6
-            if thumpFreq > 0 {
-                sample += 0.9 * sin(2 * .pi * thumpFreq * t) * exp(-t / base.thumpTau)
+            // Snap envelope(s): each card edge is its own tiny transient.
+            var env = 0.0
+            for k in 0..<base.ticks {
+                let dt = t - Double(k) * tickGap
+                if dt >= 0 { env += exp(-dt / snapTau) * pow(0.7, Double(k)) }
             }
-            let attack = min(1.0, Double(i) / attackFrames)
-            let release = min(1.0, Double(frames - i) / releaseFrames)
-            sample *= attack * release
+            // The card settling onto the felt — softer and a touch longer.
+            if base.settleGain > 0, t >= settleStart {
+                env += base.settleGain * exp(-(t - settleStart) / base.settleTau)
+            }
+            let excite = Double.random(in: -1...1, using: &rng) * env
+            // Band-pass: keep the papery snap, drop the boom and the fizz.
+            lp += kLP * (excite - lp)
+            hpTrack += kHP * (lp - hpTrack)
+            var sample = lp - hpTrack
+            if bodyFreq > 0 {
+                sample += base.bodyGain * sin(2 * .pi * bodyFreq * t) * exp(-t / 0.011)
+            }
+            sample *= min(1.0, Double(frames - i) / releaseFrames)
             raw[i] = sample
             maxAbs = max(maxAbs, abs(sample))
         }
