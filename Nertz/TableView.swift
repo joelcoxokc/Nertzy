@@ -51,6 +51,10 @@ struct TableView: View {
             if isPaused {
                 drag = nil
                 hover = nil
+            } else {
+                // Reattach audio a phone call / alarm / Siri may have torn
+                // down while we were backgrounded. Resume is the safe moment.
+                Sound.resume()
             }
         }
     }

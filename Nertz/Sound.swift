@@ -1,13 +1,13 @@
 import AVFoundation
 import UIKit
 
-/// Procedurally synthesized card sounds — no audio assets required.
-/// Each sound is a bright band-passed "snap" (the card flexing as it's
-/// slapped down) followed by a softer brush of noise (settling onto the
-/// felt), with only a whisper of low body — papery, not thumpy. Four
-/// random variants per sound so repeated plays feel physical rather than
-/// mechanical. Uses the .ambient session category: respects the silent
-/// switch and mixes with the user's own music.
+/// Real card foley played back as samples — no synthesis. Every action makes
+/// the same single soft "tick": one real card tap — the most compact tap in
+/// Kenney's CC0 "Casino Audio" pack, gently low-passed and normalized — with
+/// three subtle pitch variants so repeats don't feel mechanical. Tapping your
+/// own stock/waste deck is silent. Six voices allow rapid overlapping plays
+/// (dealing). Uses the .ambient session category: respects the silent switch
+/// and mixes with the user's own music.
 @MainActor
 enum Sound {
 
@@ -19,70 +19,127 @@ enum Sound {
         case deal       // cards dealt at round start
     }
 
-    private static let engine = AVAudioEngine()
+    /// The sample variants and playback level for each event. Tune softness
+    /// here: swap the file sets (place/shove/slide) or nudge the volumes.
+    private static func config(_ kind: Kind) -> (files: [String], volume: Float) {
+        switch kind {
+        case .place:    return (["card-tick-1", "card-tick-2", "card-tick-3"], 0.55)
+        case .score:    return (["card-tick-1", "card-tick-2", "card-tick-3"], 0.55)
+        case .flip:     return ([], 0.0)   // tapping your stock/waste deck is silent
+        case .opponent: return (["card-tick-1", "card-tick-2", "card-tick-3"], 0.40)
+        case .deal:     return (["card-tick-1", "card-tick-2", "card-tick-3"], 0.35)
+        }
+    }
+
+    private static var engine = AVAudioEngine()
     private static var players: [AVAudioPlayerNode] = []
-    private static var buffers: [Kind: [AVAudioPCMBuffer]] = [:]
+    private static var buffers: [String: AVAudioPCMBuffer] = [:]
     private static var nextPlayer = 0
     private static var ready = false
+    // An interruption (phone call, alarm, Siri) leaves the engine in a state
+    // where `isRunning` can read true yet no audio renders — so that flag alone
+    // can't be trusted. This latches "the graph is dead, rebuild it" until a
+    // rebuild actually succeeds.
+    private static var needsRestart = false
 
     static func start() {
         guard !ready else { return }
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.ambient, options: [.mixWithOthers])
-        try? session.setActive(true)
-
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1) else { return }
-        for _ in 0..<6 {
-            let node = AVAudioPlayerNode()
-            engine.attach(node)
-            engine.connect(node, to: engine.mainMixerNode, format: format)
-            players.append(node)
-        }
-        engine.mainMixerNode.outputVolume = 0.9
-
-        var rng = SystemRandomNumberGenerator()
-        for kind in Kind.allCases {
-            buffers[kind] = (0..<4).compactMap { _ in
-                synthesize(kind, format: format, rng: &rng)
-            }
-        }
-        do {
-            try engine.start()
-        } catch {
-            return
-        }
-        players.forEach { $0.play() }
+        loadBuffers()
+        guard buildEngine() else { return }
         ready = true
         installRecoveryObservers()
     }
 
+    /// Load every referenced sample once. They're all the same format (mono
+    /// 44.1k) and stay valid across engine rebuilds, so this runs a single time.
+    private static func loadBuffers() {
+        guard buffers.isEmpty else { return }
+        let names = Set(Kind.allCases.flatMap { config($0).files })
+        for name in names {
+            guard let url = Bundle.main.url(forResource: name, withExtension: "caf"),
+                  let file = try? AVAudioFile(forReading: url) else { continue }
+            let fmt = file.processingFormat
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: fmt,
+                                                frameCapacity: AVAudioFrameCount(file.length)),
+                  (try? file.read(into: buffer)) != nil else { continue }
+            buffers[name] = buffer
+        }
+    }
+
+    /// Build a FRESH engine + player nodes and start playback. After an
+    /// interruption (phone call, alarm, Siri) the old engine's route to the
+    /// hardware output can be dead even though `isRunning` reads true and
+    /// start() throws nothing — restarting that same object stays silent. Only
+    /// a brand-new AVAudioEngine reconnects to the hardware. Buffers are
+    /// format-only data, so they're reused. Returns whether audio came up live.
+    private static func buildEngine() -> Bool {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.ambient, options: [.mixWithOthers])
+        try? session.setActive(true)
+
+        guard let format = buffers.values.first?.format else { return false }
+
+        let fresh = AVAudioEngine()
+        var newPlayers: [AVAudioPlayerNode] = []
+        for _ in 0..<6 {                       // six voices for overlapping plays
+            let node = AVAudioPlayerNode()
+            fresh.attach(node)
+            fresh.connect(node, to: fresh.mainMixerNode, format: format)
+            newPlayers.append(node)
+        }
+        fresh.mainMixerNode.outputVolume = 0.8
+
+        do {
+            try fresh.start()
+        } catch {
+            return false
+        }
+        newPlayers.forEach { $0.play() }
+        engine = fresh
+        players = newPlayers
+        nextPlayer = 0
+        return true
+    }
+
+    /// Called when the player resumes a paused game — a guaranteed-foreground,
+    /// interruption-is-over moment, and so the most reliable place to revive
+    /// audio a phone call, alarm, or Siri tore down. Forces a rebuild
+    /// regardless of whether the system interruption notifications fired.
+    static func resume() {
+        guard ready else { return }
+        needsRestart = true
+        recover()
+    }
+
     static func play(_ kind: Kind) {
         guard ready else { return }
-        // Self-heal: a phone call or Siri stops the engine, and iOS won't
-        // restart it for us. Revive it on the next play if needed.
-        if !engine.isRunning { recover() }
-        guard engine.isRunning,
-              let variants = buffers[kind],
-              let buffer = variants.randomElement() else { return }
+        // Self-heal: an interruption tears the engine down and iOS won't
+        // rebuild it for us. Revive it on the next play if needed.
+        if needsRestart || !engine.isRunning { recover() }
+        guard engine.isRunning else { return }
+        let cfg = config(kind)
+        guard let name = cfg.files.randomElement(), let buffer = buffers[name] else { return }
         let node = players[nextPlayer]
         nextPlayer = (nextPlayer + 1) % players.count
+        node.volume = cfg.volume
         node.scheduleBuffer(buffer, at: nil)
     }
 
     // MARK: - Interruption recovery
 
-    /// Phone calls, Siri, and route changes (AirPods in/out) stop the
-    /// engine. Restart it when the interruption ends, when the app returns
-    /// to the foreground, and lazily from play() as a last resort.
+    /// Rebuild the engine after an interruption (phone call, alarm, Siri) or
+    /// route change. Triggered when the interruption ends, when the player
+    /// resumes a paused game, when the app returns to the foreground, and
+    /// lazily from play() as a last resort.
     private static func recover() {
-        guard ready, !engine.isRunning else { return }
-        try? AVAudioSession.sharedInstance().setActive(true)
-        do {
-            try engine.start()
-        } catch {
-            return
-        }
-        players.forEach { $0.play() }
+        guard ready, needsRestart || !engine.isRunning else { return }
+        // Tear the old engine down and build a brand-new one. A bare stop/start
+        // of the same object comes back isRunning=true yet silent — the
+        // interruption severed its hardware output route and only a fresh
+        // engine reconnects. If the build fails (interruption still active),
+        // stay latched and retry on interruption-ended / resume() / next play().
+        engine.stop()
+        if buildEngine() { needsRestart = false }
     }
 
     private static func installRecoveryObservers() {
@@ -92,122 +149,37 @@ enum Sound {
             object: nil, queue: .main
         ) { note in
             guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-                  AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
-            Task { @MainActor in Sound.recover() }
+                  let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+            Task { @MainActor in
+                switch type {
+                case .began:
+                    // Graph is dead now even though isRunning may still read
+                    // true; latch a rebuild for when the interruption ends.
+                    Sound.needsRestart = true
+                case .ended:
+                    Sound.recover()
+                @unknown default:
+                    break
+                }
+            }
         }
         center.addObserver(
             forName: .AVAudioEngineConfigurationChange,
-            object: engine, queue: .main
+            object: nil, queue: .main
         ) { _ in
+            // Route changes (AirPods in/out) can stop the engine. Don't force a
+            // rebuild here — recover() only acts if it actually went down, or
+            // the fresh engine's own config-change would loop us. object: nil
+            // because the engine instance changes on every rebuild.
             Task { @MainActor in Sound.recover() }
         }
         center.addObserver(
             forName: UIApplication.didBecomeActiveNotification,
             object: nil, queue: .main
         ) { _ in
+            // Backstop: if .ended never arrived (app was backgrounded for the
+            // whole call), recover on the way back in.
             Task { @MainActor in Sound.recover() }
         }
-    }
-
-    // MARK: - Synthesis
-
-    private struct Spec {
-        let duration: Double    // seconds
-        let snapTau: Double     // the snap's decay — shorter = crisper
-        let hpFreq: Double      // band-pass low edge (Hz): cuts the boom
-        let lpFreq: Double      // band-pass high edge (Hz): cuts the hiss
-        let ticks: Int          // extra micro-snaps (several cards at once)
-        let tickGap: Double     // seconds between micro-snaps
-        let settleGain: Double  // the softer felt-brush after the snap
-        let settleTau: Double
-        let bodyFreq: Double    // faint knock of the table, 0 = none
-        let bodyGain: Double
-        let peak: Double        // normalized output level
-    }
-
-    private static func spec(for kind: Kind) -> Spec {
-        switch kind {
-        case .place:
-            return Spec(duration: 0.085, snapTau: 0.0042, hpFreq: 1300, lpFreq: 6200,
-                        ticks: 1, tickGap: 0, settleGain: 0.50, settleTau: 0.016,
-                        bodyFreq: 290, bodyGain: 0.22, peak: 0.60)
-        case .score:
-            return Spec(duration: 0.090, snapTau: 0.0048, hpFreq: 1500, lpFreq: 7800,
-                        ticks: 1, tickGap: 0, settleGain: 0.45, settleTau: 0.018,
-                        bodyFreq: 330, bodyGain: 0.20, peak: 0.72)
-        case .flip:
-            // Three cards riffle past: three quick ticks, no table knock.
-            return Spec(duration: 0.110, snapTau: 0.0030, hpFreq: 1700, lpFreq: 7500,
-                        ticks: 3, tickGap: 0.024, settleGain: 0.30, settleTau: 0.012,
-                        bodyFreq: 0, bodyGain: 0, peak: 0.42)
-        case .opponent:
-            return Spec(duration: 0.075, snapTau: 0.0040, hpFreq: 900, lpFreq: 4200,
-                        ticks: 1, tickGap: 0, settleGain: 0.50, settleTau: 0.014,
-                        bodyFreq: 260, bodyGain: 0.16, peak: 0.30)
-        case .deal:
-            return Spec(duration: 0.045, snapTau: 0.0026, hpFreq: 1500, lpFreq: 7000,
-                        ticks: 1, tickGap: 0, settleGain: 0.25, settleTau: 0.009,
-                        bodyFreq: 0, bodyGain: 0, peak: 0.24)
-        }
-    }
-
-    private static func synthesize(
-        _ kind: Kind,
-        format: AVAudioFormat,
-        rng: inout SystemRandomNumberGenerator
-    ) -> AVAudioPCMBuffer? {
-        let base = spec(for: kind)
-        let sr = format.sampleRate
-        let snapTau = base.snapTau * Double.random(in: 0.80...1.25, using: &rng)
-        let tickGap = base.tickGap * Double.random(in: 0.85...1.20, using: &rng)
-        let hpFreq = base.hpFreq * Double.random(in: 0.85...1.15, using: &rng)
-        let lpFreq = base.lpFreq * Double.random(in: 0.85...1.15, using: &rng)
-        let bodyFreq = base.bodyFreq * Double.random(in: 0.90...1.10, using: &rng)
-
-        let frameCount = AVAudioFrameCount(sr * base.duration)
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount),
-              let data = buffer.floatChannelData?[0] else { return nil }
-        buffer.frameLength = frameCount
-
-        let frames = Int(frameCount)
-        let kLP = 1 - exp(-2 * .pi * lpFreq / sr)
-        let kHP = 1 - exp(-2 * .pi * hpFreq / sr)
-        // The settle starts just after the last tick's snap.
-        let settleStart = Double(base.ticks - 1) * tickGap + 0.006
-        var lp = 0.0
-        var hpTrack = 0.0
-        var maxAbs = 0.0001
-        var raw = [Double](repeating: 0, count: frames)
-        let releaseFrames = max(1.0, sr * 0.004)
-
-        for i in 0..<frames {
-            let t = Double(i) / sr
-            // Snap envelope(s): each card edge is its own tiny transient.
-            var env = 0.0
-            for k in 0..<base.ticks {
-                let dt = t - Double(k) * tickGap
-                if dt >= 0 { env += exp(-dt / snapTau) * pow(0.7, Double(k)) }
-            }
-            // The card settling onto the felt — softer and a touch longer.
-            if base.settleGain > 0, t >= settleStart {
-                env += base.settleGain * exp(-(t - settleStart) / base.settleTau)
-            }
-            let excite = Double.random(in: -1...1, using: &rng) * env
-            // Band-pass: keep the papery snap, drop the boom and the fizz.
-            lp += kLP * (excite - lp)
-            hpTrack += kHP * (lp - hpTrack)
-            var sample = lp - hpTrack
-            if bodyFreq > 0 {
-                sample += base.bodyGain * sin(2 * .pi * bodyFreq * t) * exp(-t / 0.011)
-            }
-            sample *= min(1.0, Double(frames - i) / releaseFrames)
-            raw[i] = sample
-            maxAbs = max(maxAbs, abs(sample))
-        }
-        let gain = base.peak / maxAbs
-        for i in 0..<frames {
-            data[i] = Float(raw[i] * gain)
-        }
-        return buffer
     }
 }
