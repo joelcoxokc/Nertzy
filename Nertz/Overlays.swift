@@ -140,7 +140,7 @@ struct ScoreboardOverlay: View {
                 }
 
                 if let w = summary.winner {
-                    Text("🏆 \(name(w)) wins the match!")
+                    Text("🏆 \(name(w)) \(w == 0 ? "win" : "wins") the match!")
                         .font(.system(size: 20, weight: .heavy, design: .rounded))
                         .foregroundStyle(Color(hex: 0xFFD166))
                 }

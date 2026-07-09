@@ -483,15 +483,6 @@ struct TableView: View {
         .position(layout.undoPos)
         .zIndex(9350)
 
-        // The big red button
-        if engine.nertsReady {
-            let leftEdge = layout.wastePos(depth: 2).x - layout.cardW / 2
-            NertsButton { engine.callNerts() }
-                .position(x: (12 + leftEdge) / 2, y: layout.bottomRowY)
-                .zIndex(9400)
-                .transition(.scale(scale: 0.6).combined(with: .opacity))
-        }
-
         // Banner toasts
         if let banner = engine.banner {
             Text(banner.text)

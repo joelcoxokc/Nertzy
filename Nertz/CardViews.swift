@@ -198,37 +198,3 @@ struct LandingRing: View {
             .allowsHitTesting(false)
     }
 }
-
-// MARK: - The big red button
-
-struct NertsButton: View {
-    let action: () -> Void
-
-    @State private var pulse = false
-
-    var body: some View {
-        Button(action: action) {
-            Text("NERTS!")
-                .font(.system(size: 24, weight: .black, design: .rounded))
-                .tracking(1)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 26)
-                .padding(.vertical, 14)
-                .background(
-                    Capsule().fill(LinearGradient(
-                        colors: [Color(hex: 0xFF5A4E), Color(hex: 0xD22B20)],
-                        startPoint: .top, endPoint: .bottom
-                    ))
-                )
-                .overlay(Capsule().strokeBorder(.white.opacity(0.35), lineWidth: 1.5))
-                .shadow(color: Color(hex: 0xD22B20).opacity(0.6), radius: pulse ? 18 : 8, y: 4)
-                .scaleEffect(pulse ? 1.06 : 0.98)
-        }
-        .buttonStyle(.plain)
-        .onAppear {
-            withAnimation(.easeInOut(duration: 0.55).repeatForever(autoreverses: true)) {
-                pulse = true
-            }
-        }
-    }
-}
