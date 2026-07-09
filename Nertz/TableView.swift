@@ -109,6 +109,7 @@ struct TableView: View {
         var dragging = false
         var flight = false
         var shadowed = false
+        var instant = false
     }
 
     private func renderCards(_ layout: TableLayout) -> [RC] {
@@ -125,14 +126,15 @@ struct TableView: View {
                 shadowed: i == stockCount - 1
             ))
         }
-        // Waste — top three fanned
+        // Waste — top three fanned. A fresh flip appears in place, no travel.
         let wasteCount = board.waste.count
         for (i, c) in board.waste.enumerated() {
             let depth = wasteCount - 1 - i
             out.append(RC(
                 id: c.id, card: c, pos: layout.wastePos(depth: depth),
                 z: 300 + Double(i), faceUp: true, w: layout.cardW, rot: 0,
-                shadowed: depth < 3
+                shadowed: depth < 3,
+                instant: engine.freshWasteIDs.contains(c.id)
             ))
         }
         // Nerts pile
@@ -230,15 +232,15 @@ struct TableView: View {
                 .onTapGesture { engine.handleTap(on: rc.card) }
                 .gesture(dragGesture(for: rc.card, layout: layout))
                 .animation(
-                    rc.dragging
+                    rc.dragging || rc.instant
                         ? nil
                         : (rc.flight
                             ? .spring(response: 0.6, dampingFraction: 0.8)
                             : .spring(response: 0.32, dampingFraction: 0.82)),
                     value: rc.pos
                 )
-                .animation(rc.dragging ? nil : .spring(response: 0.32, dampingFraction: 0.82), value: rc.rot)
-                .animation(.spring(response: 0.34, dampingFraction: 0.82), value: rc.faceUp)
+                .animation(rc.dragging || rc.instant ? nil : .spring(response: 0.32, dampingFraction: 0.82), value: rc.rot)
+                .animation(rc.instant ? nil : .spring(response: 0.34, dampingFraction: 0.82), value: rc.faceUp)
                 .animation(.spring(response: 0.35, dampingFraction: 0.85), value: rc.w)
                 .animation(.easeOut(duration: 0.32), value: rc.opacity)
                 .animation(.linear(duration: 0.3), value: engine.shakeTokens[rc.id] ?? 0)
@@ -264,6 +266,8 @@ struct TableView: View {
                         leadID: card.id
                     )
                     Haptics.lift()
+                    // Any pickup re-arms waste animations (snap-backs spring).
+                    if !engine.freshWasteIDs.isEmpty { engine.freshWasteIDs = [] }
                 }
                 guard drag?.leadID == card.id else { return }
                 drag?.translation = value.translation
@@ -406,8 +410,8 @@ struct TableView: View {
             .position(x: 58, y: layout.statusY)
             .zIndex(9300)
 
-        // Pause, top right (online: nobody can freeze a live table —
-        // the button offers to leave instead)
+        // Pause, next to undo under the waste (online: nobody can freeze a
+        // live table — the button offers to leave instead)
         Button {
             if engine.isOnline {
                 confirmLeave = true
@@ -418,11 +422,12 @@ struct TableView: View {
             Image(systemName: engine.isOnline ? "rectangle.portrait.and.arrow.right" : "pause.fill")
                 .font(.system(size: 14, weight: .bold))
                 .foregroundStyle(.white.opacity(0.85))
-                .frame(width: 34, height: 34)
+                .frame(width: 40, height: 40)
                 .background(Circle().fill(Color.black.opacity(0.28)))
+                .overlay(Circle().strokeBorder(.white.opacity(0.12), lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .position(x: layout.size.width - 32, y: layout.statusY)
+        .position(layout.pausePos)
         .zIndex(9300)
         .confirmationDialog(
             "Leave the table?",
@@ -456,14 +461,14 @@ struct TableView: View {
                 .zIndex(9100)
         }
 
-        // Undo — one move, bottom left
+        // Undo — one move, below the waste
         Button {
             engine.undoLast()
         } label: {
             Image(systemName: "arrow.uturn.backward")
                 .font(.system(size: 17, weight: .bold))
                 .foregroundStyle(.white.opacity(0.9))
-                .frame(width: 44, height: 44)
+                .frame(width: 40, height: 40)
                 .background(Circle().fill(Color.black.opacity(0.30)))
                 .overlay(Circle().strokeBorder(.white.opacity(0.15), lineWidth: 1))
         }
@@ -471,7 +476,7 @@ struct TableView: View {
         .disabled(!engine.canUndo)
         .opacity(engine.canUndo ? 1 : 0.35)
         .animation(.easeInOut(duration: 0.2), value: engine.canUndo)
-        .position(x: layout.wastePos(depth: 1).x, y: layout.bottomRowY - layout.cardH / 2 - 32)
+        .position(layout.undoPos)
         .zIndex(9350)
 
         // The big red button
