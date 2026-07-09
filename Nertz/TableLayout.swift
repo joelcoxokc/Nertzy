@@ -77,7 +77,9 @@ struct TableLayout {
         return base.offsetBy(0, CGFloat(index) * step)
     }
 
-    var stockPos: CGPoint { CGPoint(x: rightColX, y: bottomRowY) }
+    /// The deck sits level with the waste fan so the stock and its dispense
+    /// pile read as one row across the bottom-right.
+    var stockPos: CGPoint { CGPoint(x: rightColX, y: wasteY) }
 
     /// The waste rides above the undo/pause row, clear of the screen bottom.
     var wasteY: CGFloat { size.height - 60 - cardH / 2 }
@@ -89,11 +91,11 @@ struct TableLayout {
         return CGPoint(x: stockPos.x - cardW - 14 - d * 28, y: wasteY)
     }
 
-    // MARK: Buttons — undo and pause tucked under the waste fan
+    // MARK: Buttons — undo centered under the waste fan, pause under the stock deck
 
     var buttonRowY: CGFloat { size.height - 32 }
-    var undoPos: CGPoint { CGPoint(x: wastePos(depth: 1).x + 27, y: buttonRowY) }
-    var pausePos: CGPoint { CGPoint(x: wastePos(depth: 1).x - 27, y: buttonRowY) }
+    var undoPos: CGPoint { CGPoint(x: wastePos(depth: 1).x, y: buttonRowY) }
+    var pausePos: CGPoint { CGPoint(x: stockPos.x, y: buttonRowY) }
 
     // MARK: Seats — bare nerts-count badges pinned to the table edges
 

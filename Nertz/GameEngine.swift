@@ -131,6 +131,10 @@ final class GameEngine {
 
     private var aiNextMove: [Date] = []
     private var aiCallAt: [Date?] = []
+    /// When the local player's auto-Nerts fires. Armed once your pile is
+    /// empty (and nothing you tossed is still in the air); cleared if a
+    /// bounced card refills it. Mirrors `aiCallAt` for seat 0.
+    private var humanCallAt: Date?
     private var rng = SystemRandomNumberGenerator()
     private var bannerCounter = 0
     private var pulseCounter = 0
@@ -214,6 +218,7 @@ final class GameEngine {
         undo = nil
         seatPulse = Array(repeating: 0, count: playerCount)
         aiCallAt = Array(repeating: nil, count: playerCount)
+        humanCallAt = nil
         aiNextMove = Array(repeating: .distantFuture, count: playerCount)
         lastReportedNerts = Array(repeating: -1, count: playerCount)
         boards = (0..<playerCount).map { p in
@@ -310,6 +315,7 @@ final class GameEngine {
             for i in aiCallAt.indices {
                 aiCallAt[i] = aiCallAt[i]?.addingTimeInterval(delta)
             }
+            humanCallAt = humanCallAt?.addingTimeInterval(delta)
             table.shiftDeadlines(by: delta)
             pausedAt = nil
             paused = false
@@ -353,6 +359,24 @@ final class GameEngine {
         guard phase == .playing, !dealing, !paused else { return }
         let now = Date()
         let params = settings.difficulty.params
+
+        // Auto-Nerts: no button to hit. The instant your pile is empty and
+        // nothing you tossed is still racing for a foundation (an online toss
+        // can lose the race and bounce home, refilling the pile), the table
+        // calls it for you after a short beat. Skipped in demo mode, where the
+        // bot loop below drives seat 0.
+        if !aiSeats.contains(0) {
+            if nertsReady && !table.flying.contains(where: { $0.fromSeat == 0 }) {
+                if humanCallAt == nil {
+                    humanCallAt = now.addingTimeInterval(0.4)
+                } else if now >= humanCallAt! {
+                    callNerts()
+                    return
+                }
+            } else {
+                humanCallAt = nil
+            }
+        }
 
         for p in aiSeats {
             if boards[p].nerts.isEmpty {
