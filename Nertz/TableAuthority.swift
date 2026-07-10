@@ -188,7 +188,7 @@ final class LocalTableAuthority: TableAuthority {
         for i in totals.indices { totals[i] += deltas[i] }
         scores = totals
         var winner: Int?
-        if let best = totals.max(), best >= 100 {
+        if let best = totals.max(), best >= settings.targetScore {
             winner = totals.firstIndex(of: best)
         }
         flying = []
@@ -206,6 +206,46 @@ final class LocalTableAuthority: TableAuthority {
             StatsStore.shared.record(result, settings: settings, match: matchToken)
         }
         delegate?.roundEnded(result)
+    }
+
+    // MARK: Saving & resuming (solo only)
+
+    /// Everything the table needs to come back after the app dies.
+    /// Piles mid-retirement (completed, flipping, vanishing) fold into
+    /// `retired` — their animation tasks won't survive a relaunch, and
+    /// their cards still count.
+    func snapshot() -> TableSnapshot {
+        var keep: [FoundationPile] = []
+        var gone = retired
+        for pile in foundations {
+            if pile.isComplete || pile.faceDown || pile.vanishing {
+                gone.append(contentsOf: pile.cards)
+            } else {
+                keep.append(pile)
+            }
+        }
+        return TableSnapshot(
+            scores: scores, roundNumber: roundNumber, foundations: keep,
+            retired: gone, nextPileID: nextPileID, matchToken: matchToken,
+            summary: summary
+        )
+    }
+
+    /// Rebuild the table from a saved match. `live` = the round was in
+    /// progress (false when the save was made at the scoreboard).
+    func restore(_ s: TableSnapshot, settings: GameSettings, live: Bool) {
+        self.settings = settings
+        playerCount = settings.opponents + 1
+        matchToken = s.matchToken
+        scores = s.scores
+        roundNumber = s.roundNumber
+        foundations = s.foundations
+        retired = s.retired
+        nextPileID = s.nextPileID
+        summary = s.summary
+        flying = []
+        roundActive = live
+        lastFoundationPlay = Date()
     }
 
     // MARK: Foundation plays
@@ -331,6 +371,7 @@ final class LocalTableAuthority: TableAuthority {
         if let index {
             guard index < foundations.count, foundations[index].accepts(card) else { return nil }
             foundations[index].cards.append(card)
+            foundations[index].lastLandAt = Date()
             id = foundations[index].id
             if foundations[index].isComplete {
                 // The king caps the pile: flip it over, then clear it away.

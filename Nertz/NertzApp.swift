@@ -26,9 +26,12 @@ struct RootView: View {
         }
         .animation(.easeInOut(duration: 0.3), value: engine.phase == .menu)
         .onChange(of: scenePhase) { _, newPhase in
-            // Leaving the app pauses the table; the player resumes by hand.
+            // Leaving the app pauses the table; the player resumes by
+            // hand. The match also goes to disk, so even a swipe-kill
+            // from the app switcher can be picked back up.
             if newPhase != .active {
                 engine.setPaused(true)
+                engine.autosave()
             }
         }
         .onChange(of: gameCenter.session != nil) { _, hasSession in
@@ -61,9 +64,13 @@ struct RootView: View {
                 }
                 engine.settings = GameSettings(
                     opponents: args.contains("-threebots") ? 3 : 2,
-                    difficulty: args.contains("-frantic") ? .frantic : .classic
+                    difficulty: args.contains("-frantic") ? .frantic : .classic,
+                    targetScore: args.contains("-shortmatch") ? 1 : 100
                 )
                 engine.newMatch()
+            } else if args.contains("-autoresume") {
+                // Dev: skip the CONTINUE tap (simctl can't touch the screen).
+                engine.resumeSavedMatch()
             }
         }
     }

@@ -45,6 +45,9 @@ struct TableConfig: Codable {
     var humans: [HumanSeat]
     var botCount: Int
     var difficultyRaw: String   // the host's bots' speed
+    /// First to this total wins. Optional so configs from builds that
+    /// predate the setting still decode (they played to 100).
+    var targetScore: Int?
 }
 
 /// A card on the wire — `seat` is the GLOBAL owner; every device
@@ -206,14 +209,15 @@ final class MatchSession {
     /// Host: announce the table (seating + bots + speed) and deal.
     /// The host seats itself first — tableConfig's order IS the global
     /// seating, so whoever sends it becomes seat 0 everywhere.
-    func startAsHost(engine: GameEngine, botCount: Int, difficulty: Difficulty) {
+    func startAsHost(engine: GameEngine, botCount: Int, difficulty: Difficulty, targetScore: Int = 100) {
         let me = seats.filter(\.isLocal)
         let others = seats.filter { !$0.isLocal }
         let humans = (me + others).map { TableConfig.HumanSeat(id: $0.id, name: $0.name) }
         let config = TableConfig(
             humans: humans,
             botCount: botCount,
-            difficultyRaw: difficulty.rawValue
+            difficultyRaw: difficulty.rawValue,
+            targetScore: targetScore
         )
         send(.tableConfig(config))
         beginGame(engine: engine, config: config)
@@ -237,7 +241,11 @@ final class MatchSession {
         let host = myGlobal == 0        // seat 0 (lowest id) hosts
         let map = SeatMap(total: total, myGlobal: myGlobal)
         let difficulty = Difficulty(rawValue: config.difficultyRaw) ?? .classic
-        let settings = GameSettings(opponents: total - 1, difficulty: difficulty)
+        let settings = GameSettings(
+            opponents: total - 1,
+            difficulty: difficulty,
+            targetScore: config.targetScore ?? 100
+        )
 
         // Seat identity in LOCAL order (0 = me), one list for the table
         // UI and one for the record book.

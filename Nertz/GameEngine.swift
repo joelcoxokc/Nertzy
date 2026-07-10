@@ -15,8 +15,9 @@ final class GameEngine {
     private(set) var banner: BannerMessage?
     private(set) var seatPulse: [Int] = []
     var shakeTokens: [String: Int] = [:]
-    /// Cards that just flipped off the stock — they appear on the waste in
-    /// place, with no travel or flip animation. Cleared on the next pickup.
+    /// Waste cards that render in place, with no travel or flip animation:
+    /// a fresh flip off the stock, or the whole waste after an undo.
+    /// Cleared on the next pickup.
     var freshWasteIDs: Set<String> = []
     private(set) var paused = false
     /// Debug: deal opponents a 2-card nerts pile so rounds end fast (-quickround).
@@ -198,6 +199,8 @@ final class GameEngine {
     // MARK: - Match / round lifecycle
 
     func newMatch() {
+        // A fresh deal replaces whatever match was waiting on CONTINUE.
+        if !isOnline { MatchSaver.shared.clear() }
         table.beginMatch(settings: settings)
         startRound()
     }
@@ -289,10 +292,91 @@ final class GameEngine {
             leaveOnlineMatch()
             return
         }
+        autosave()      // the match keeps, on the menu's CONTINUE button
         loopTask?.cancel()
         dealTask?.cancel()
         table.abandonRound()
         phase = .menu
+    }
+
+    // MARK: - Saving & resuming (solo only)
+
+    /// Freeze the match to disk so closing the app doesn't lose it.
+    /// Called when the app leaves the foreground, when a round ends,
+    /// and on the way out to the menu. Online matches can't be
+    /// resumed; debug deals aren't worth keeping.
+    func autosave() {
+        guard tableKind == .solo, !debugDemo, !debugTinyNerts,
+              phase != .menu, let local = table as? LocalTableAuthority
+        else { return }
+        // A decided match is over — nothing to come back to.
+        if summary?.winner != nil {
+            MatchSaver.shared.clear()
+            return
+        }
+        // Claims still in the air go home in the snapshot; their
+        // flights won't survive a relaunch. (Bouncing cards already
+        // rejoined their board the moment they lost.)
+        var savedBoards = boards
+        for claim in local.flying where !claim.bouncing {
+            var b = savedBoards[claim.fromSeat]
+            switch claim.source {
+            case .nertsTop: b.nerts.append(claim.card)
+            case .wasteTop: b.waste.append(claim.card)
+            case .work(let pile, _): b.work[pile].append(claim.card)
+            }
+            savedBoards[claim.fromSeat] = b
+        }
+        MatchSaver.shared.save(MatchSnapshot(
+            settings: settings,
+            boards: savedBoards,
+            table: local.snapshot(),
+            atScoreboard: phase == .roundEnd,
+            midDeal: dealing
+        ))
+    }
+
+    /// Reopen the last saved solo match right where it stood.
+    func resumeSavedMatch() {
+        guard phase == .menu, !isOnline,
+              let snap = MatchSaver.shared.saved else { return }
+        loopTask?.cancel()
+        dealTask?.cancel()
+        settings = snap.settings
+        let local = LocalTableAuthority()
+        local.restore(snap.table, settings: snap.settings,
+                      live: !snap.atScoreboard && !snap.midDeal)
+        table = local
+        table.delegate = self
+        if snap.midDeal {
+            // The app died mid-deal: same scores, same round, fresh deal.
+            startRound()
+            return
+        }
+        boards = snap.boards
+        pulses = []
+        shakeTokens = [:]
+        freshWasteIDs = []
+        undo = nil
+        paused = false
+        pausedAt = nil
+        dealing = false
+        seatPulse = Array(repeating: 0, count: playerCount)
+        aiCallAt = Array(repeating: nil, count: playerCount)
+        humanCallAt = nil
+        aiNextMove = Array(repeating: .distantFuture, count: playerCount)
+        lastReportedNerts = Array(repeating: -1, count: playerCount)
+        if snap.atScoreboard {
+            phase = .roundEnd
+        } else {
+            phase = .playing
+            let now = Date()
+            for p in aiSeats {
+                aiNextMove[p] = now.addingTimeInterval(sampleInterval() * 1.3)
+            }
+            table.noteActivity()
+            startLoop()
+        }
     }
 
     /// Pause freezes the AI loop; resuming shifts every AI's schedule
@@ -391,7 +475,7 @@ final class GameEngine {
                 aiCallAt[p] = nil
             }
             if now >= aiNextMove[p] {
-                let action = performAIMove(p)
+                let action = performAIMove(p, now: now)
                 let base = sampleInterval()
                 aiNextMove[p] = now.addingTimeInterval(action == .flip ? base * 0.55 : base)
             }
@@ -419,7 +503,7 @@ final class GameEngine {
 
     private enum AIAction { case flip, play }
 
-    private func performAIMove(_ p: Int) -> AIAction {
+    private func performAIMove(_ p: Int, now: Date) -> AIAction {
         let params = settings.difficulty.params
         if Double.random(in: 0...1, using: &rng) < params.skipChance {
             flipStock(p)
@@ -430,6 +514,7 @@ final class GameEngine {
             foundations: foundations,
             maxFoundations: maxFoundations,
             params: params,
+            now: now,
             rng: &rng
         ) else {
             flipStock(p)
@@ -715,6 +800,10 @@ final class GameEngine {
         }
         boards[0] = u.board
         undo = nil
+        // The waste snaps straight back to what it showed before the
+        // move — an undo is a correction, not a play; zero travel.
+        // (Cards returning to the stock are always instant already.)
+        freshWasteIDs = Set(u.board.waste.map(\.id))
         Haptics.place()
         Sound.play(.place)
     }
@@ -774,6 +863,9 @@ extension GameEngine: TableAuthorityDelegate {
     func roundEnded(_ summary: RoundSummary) {
         pulses = []
         phase = .roundEnd
+        // The scoreboard is a resting point — keep it; a decided match
+        // clears instead (autosave sorts that out).
+        autosave()
     }
 
     func tableShuffleCalled() {
@@ -811,11 +903,17 @@ enum AIBrain {
         foundations: [FoundationPile],
         maxFoundations: Int,
         params: DifficultyParams,
+        now: Date,
         rng: inout SystemRandomNumberGenerator
     ) -> (MoveSource, DropTarget)? {
 
         func foundationTarget(_ card: Card) -> DropTarget? {
-            if let idx = foundations.firstIndex(where: { $0.accepts(card) }) {
+            // A pile whose top card is fresher than human reaction time
+            // is invisible this turn — nobody slaps a card onto one
+            // that hit the felt a blink ago.
+            if let idx = foundations.firstIndex(where: {
+                $0.accepts(card) && now.timeIntervalSince($0.lastLandAt) >= params.reaction
+            }) {
                 return .foundation(idx)
             }
             if card.rank == 1, foundations.count < maxFoundations {

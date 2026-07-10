@@ -241,7 +241,7 @@ struct ScoreboardOverlay: View {
                     Capsule().fill(.white.opacity(0.10))
                     Capsule()
                         .fill(Color(hex: p == 0 ? 0x3A7BFF : 0x7CFFB0).opacity(p == 0 ? 1.0 : 0.75))
-                        .frame(width: geo.size.width * min(1, max(0.015, Double(total) / 100.0)))
+                        .frame(width: geo.size.width * min(1, max(0.015, Double(total) / Double(max(1, engine.settings.targetScore)))))
                 }
             }
             .frame(height: 5)

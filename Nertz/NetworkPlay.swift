@@ -594,6 +594,7 @@ final class GuestTableAuthority: TableAuthority {
         } else {
             guard let i = foundations.firstIndex(where: { $0.id == res.pileID }) else { return }
             foundations[i].cards.append(f.card)
+            foundations[i].lastLandAt = Date()
             if foundations[i].isComplete {
                 retirePile(res.pileID)
             }
