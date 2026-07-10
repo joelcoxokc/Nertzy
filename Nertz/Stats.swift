@@ -102,7 +102,13 @@ final class StatsStore {
         seats: [SeatRecord]? = nil
     ) {
         guard recordingEnabled else { return }
-        if matches.last?.id != id {
+        // Find the token's record wherever it sits — a resumed solo
+        // match keeps its token, and another match (say, an online
+        // game) may have been recorded in between.
+        let index: Int
+        if let i = matches.lastIndex(where: { $0.id == id }) {
+            index = i
+        } else {
             let seatList = seats ?? (0...settings.opponents).map { p in
                 SeatRecord(
                     kind: p == 0 ? .me : .bot,
@@ -118,8 +124,9 @@ final class StatsStore {
                 rounds: [],
                 winnerSeat: nil
             ))
+            index = matches.count - 1
         }
-        matches[matches.count - 1].rounds.append(RoundRecord(
+        matches[index].rounds.append(RoundRecord(
             caller: summary.caller,
             foundationCounts: summary.foundationCounts,
             nertsLeft: summary.nertsLeft,
@@ -127,7 +134,7 @@ final class StatsStore {
             totals: summary.totals
         ))
         if let w = summary.winner {
-            matches[matches.count - 1].winnerSeat = w
+            matches[index].winnerSeat = w
         }
         save()
         // Feed Game Center from the same door (no-op when signed out).

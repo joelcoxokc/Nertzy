@@ -17,7 +17,7 @@ enum Suit: Int, CaseIterable, Hashable, Codable {
     var isRed: Bool { self == .hearts || self == .diamonds }
 }
 
-struct Card: Identifiable, Hashable {
+struct Card: Identifiable, Hashable, Codable {
     let owner: Int          // 0 = you, 1+ = AI seats. Each player plays their own deck.
     let suit: Suit
     let rank: Int           // 1 = Ace ... 13 = King
@@ -54,13 +54,22 @@ func stacksOnWork(_ card: Card, onto base: Card) -> Bool {
 
 // MARK: - Piles
 
-struct FoundationPile: Identifiable {
+struct FoundationPile: Identifiable, Codable {
     let id: Int             // unique per round — piles can be retired, so never an index
     var cards: [Card]
     let spot: CGPoint       // where it was tossed — normalized (0...1) in the scatter zone
     let tilt: Double        // resting angle in degrees; cards land how they land
     var faceDown = false    // completed: the king flipped over
     var vanishing = false   // shrinking off the table
+    /// When the top card landed. Bots don't "see" a pile fresher than
+    /// their reaction time — nobody human plays onto a card 200ms
+    /// after it hits the felt. Not saved: restored piles count as
+    /// landing at load time, so bots re-orient the way you do.
+    var lastLandAt = Date()
+
+    private enum CodingKeys: String, CodingKey {
+        case id, cards, spot, tilt, faceDown, vanishing
+    }
 
     /// 13 normally; the -shortpiles debug flag lowers it so pile
     /// completion can be tested in seconds.
@@ -76,7 +85,7 @@ struct FoundationPile: Identifiable {
     }
 }
 
-struct PlayerBoard {
+struct PlayerBoard: Codable {
     var nerts: [Card] = []          // last = top (face up)
     var work: [[Card]] = [[], [], [], []]   // first = base ... last = top, all face up
     var stock: [Card] = []          // last = top
@@ -138,6 +147,7 @@ struct DifficultyParams {
     let skipChance: Double              // chance the AI fumbles and just flips
     let callDelay: ClosedRange<Double>  // how long after emptying its pile the AI calls Nerts
     let smart: Bool                     // work-pile shuffling & waste building
+    let reaction: Double                // how long a just-landed card goes unnoticed by bots
 }
 
 enum Difficulty: String, CaseIterable, Identifiable, Codable {
@@ -172,18 +182,22 @@ enum Difficulty: String, CaseIterable, Identifiable, Codable {
     var params: DifficultyParams {
         switch self {
         case .chill:
-            return DifficultyParams(interval: 3.8...7.0, skipChance: 0.32, callDelay: 7.0...11.0, smart: false)
+            return DifficultyParams(interval: 3.8...7.0, skipChance: 0.32, callDelay: 7.0...11.0, smart: false, reaction: 1.5)
         case .classic:
-            return DifficultyParams(interval: 2.2...4.0, skipChance: 0.14, callDelay: 4.0...6.5, smart: true)
+            return DifficultyParams(interval: 2.2...4.0, skipChance: 0.14, callDelay: 4.0...6.5, smart: true, reaction: 1.0)
         case .frantic:
-            return DifficultyParams(interval: 1.1...2.1, skipChance: 0.05, callDelay: 1.5...2.8, smart: true)
+            return DifficultyParams(interval: 1.1...2.1, skipChance: 0.05, callDelay: 1.5...2.8, smart: true, reaction: 0.6)
         }
     }
 }
 
-struct GameSettings {
+struct GameSettings: Codable {
     var opponents: Int = 2          // 1...3
     var difficulty: Difficulty = .classic
+    var targetScore: Int = 100      // first to this total wins the match
+
+    /// The choices the menu offers.
+    static let targetChoices = [25, 50, 100]
 }
 
 // MARK: - Round results
@@ -194,7 +208,7 @@ struct RoundSummary: Codable {
     let nertsLeft: [Int]
     let deltas: [Int]
     let totals: [Int]
-    let winner: Int?                // set when the match is over (someone reached 100)
+    let winner: Int?                // set when the match is over (someone reached the target)
     var note: String? = nil         // e.g. "Bo left the table"
 }
 

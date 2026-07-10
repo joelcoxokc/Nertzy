@@ -7,6 +7,7 @@ struct MenuView: View {
 
     @AppStorage("opponents") private var opponents = 2
     @AppStorage("difficulty") private var difficultyRaw = Difficulty.classic.rawValue
+    @AppStorage("targetScore") private var targetScore = 100
     @AppStorage(GameCenterManager.settingKey) private var gameCenterOn = false
     @State private var showStats = false
     @State private var showBoards = false
@@ -33,17 +34,22 @@ struct MenuView: View {
         ZStack {
             FeltBackground()
             VStack(spacing: 0) {
-                Spacer(minLength: 20)
+                Spacer(minLength: 16)
                 titleBlock
-                Spacer(minLength: 26)
-                VStack(spacing: 24) {
+                Spacer(minLength: 16)
+                VStack(spacing: 16) {
                     titledSection("OPPONENTS") { opponentPicker }
                     titledSection("TABLE SPEED") { difficultyPicker }
+                    titledSection("PLAY TO") { targetPicker }
                 }
-                Spacer(minLength: 26)
+                Spacer(minLength: 16)
+                if let snap = MatchSaver.shared.saved {
+                    continueButton(snap)
+                        .padding(.bottom, 10)
+                }
                 dealButton
                 playOnlineButton
-                    .padding(.top, 12)
+                    .padding(.top, 10)
                 onlineStatusLine
                 HStack(spacing: 10) {
                     statsButton
@@ -52,8 +58,8 @@ struct MenuView: View {
                     }
                     gameCenterToggle
                 }
-                .padding(.top, 14)
-                Spacer(minLength: 30)
+                .padding(.top, 10)
+                Spacer(minLength: 6)
             }
             .padding(.horizontal, 26)
             .frame(maxWidth: 480)
@@ -93,7 +99,8 @@ struct MenuView: View {
                             session.startAsHost(
                                 engine: engine,
                                 botCount: bots,
-                                difficulty: Difficulty(rawValue: difficultyRaw) ?? .classic
+                                difficulty: Difficulty(rawValue: difficultyRaw) ?? .classic,
+                                targetScore: targetScore
                             )
                         },
                         onLeave: {
@@ -153,23 +160,23 @@ struct MenuView: View {
     // MARK: Title
 
     private var titleBlock: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 10) {
             ZStack {
-                CardView(card: Card(owner: 1, suit: .spades, rank: 1), faceUp: true, width: 62)
+                CardView(card: Card(owner: 1, suit: .spades, rank: 1), faceUp: true, width: 54)
                     .rotationEffect(.degrees(-14))
-                    .offset(x: -46, y: 8)
+                    .offset(x: -40, y: 7)
                     .shadow(color: .black.opacity(0.3), radius: 8, y: 5)
-                CardView(card: Card(owner: 2, suit: .diamonds, rank: 13), faceUp: true, width: 62)
+                CardView(card: Card(owner: 2, suit: .diamonds, rank: 13), faceUp: true, width: 54)
                     .rotationEffect(.degrees(13))
-                    .offset(x: 46, y: 8)
+                    .offset(x: 40, y: 7)
                     .shadow(color: .black.opacity(0.3), radius: 8, y: 5)
-                CardView(card: Card(owner: 0, suit: .hearts, rank: 1), faceUp: true, width: 62)
+                CardView(card: Card(owner: 0, suit: .hearts, rank: 1), faceUp: true, width: 54)
                     .shadow(color: .black.opacity(0.35), radius: 10, y: 6)
             }
-            .frame(height: 104)
-            VStack(spacing: 6) {
+            .frame(height: 88)
+            VStack(spacing: 5) {
                 Text("NERTZY")
-                    .font(.system(size: 56, weight: .black, design: .rounded))
+                    .font(.system(size: 50, weight: .black, design: .rounded))
                     .tracking(5)
                     .foregroundStyle(.white)
                     .shadow(color: .black.opacity(0.4), radius: 8, y: 4)
@@ -198,7 +205,7 @@ struct MenuView: View {
                             .foregroundStyle(.white)
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 11)
+                    .padding(.vertical, 9)
                     .background(
                         RoundedRectangle(cornerRadius: 16, style: .continuous)
                             .fill(.white.opacity(selected ? 0.20 : 0.07))
@@ -217,7 +224,7 @@ struct MenuView: View {
     }
 
     private var difficultyPicker: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 6) {
             ForEach(Difficulty.allCases) { d in
                 let selected = difficultyRaw == d.rawValue
                 Button {
@@ -240,7 +247,7 @@ struct MenuView: View {
                             .foregroundStyle(selected ? Color(hex: 0x7CFFB0) : .white.opacity(0.25))
                     }
                     .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
+                    .padding(.vertical, 8)
                     .background(
                         RoundedRectangle(cornerRadius: 16, style: .continuous)
                             .fill(.white.opacity(selected ? 0.18 : 0.07))
@@ -258,13 +265,88 @@ struct MenuView: View {
         }
     }
 
+    private var targetPicker: some View {
+        HStack(spacing: 10) {
+            ForEach(GameSettings.targetChoices, id: \.self) { n in
+                let selected = targetScore == n
+                Button {
+                    targetScore = n
+                    Haptics.flip()
+                } label: {
+                    VStack(spacing: 4) {
+                        Text(n == 25 ? "⚡️" : n == 50 ? "🎯" : "🏆")
+                            .font(.system(size: 19))
+                        Text("\(n)")
+                            .font(.system(size: 21, weight: .heavy, design: .rounded))
+                            .foregroundStyle(.white)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 9)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(.white.opacity(selected ? 0.20 : 0.07))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .strokeBorder(
+                                .white.opacity(selected ? 0.85 : 0.12),
+                                lineWidth: selected ? 2 : 1
+                            )
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    // MARK: Continue (a saved solo match)
+
+    private func continueButton(_ snap: MatchSnapshot) -> some View {
+        Button {
+            Haptics.fanfare()
+            engine.resumeSavedMatch()
+        } label: {
+            VStack(spacing: 3) {
+                Text("CONTINUE MATCH")
+                    .font(.system(size: 20, weight: .black, design: .rounded))
+                    .tracking(2)
+                Text(continueLine(snap))
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .opacity(0.8)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 13)
+            .background(
+                Capsule().fill(LinearGradient(
+                    colors: [Color(hex: 0x35C963), Color(hex: 0x1E9B47)],
+                    startPoint: .top, endPoint: .bottom
+                ))
+            )
+            .overlay(Capsule().strokeBorder(.white.opacity(0.25), lineWidth: 1.5))
+            .shadow(color: .black.opacity(0.35), radius: 12, y: 6)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func continueLine(_ snap: MatchSnapshot) -> String {
+        let scores = snap.table.scores
+        let standings = scores.indices
+            .map { "\(AIProfile.seatName($0)) \(scores[$0])" }
+            .joined(separator: " · ")
+        return "Round \(snap.table.roundNumber) · \(standings)"
+    }
+
     // MARK: Deal
 
     private var dealButton: some View {
         Button {
             engine.settings = GameSettings(
                 opponents: opponents,
-                difficulty: Difficulty(rawValue: difficultyRaw) ?? .classic
+                difficulty: Difficulty(rawValue: difficultyRaw) ?? .classic,
+                targetScore: targetScore
             )
             Haptics.fanfare()
             engine.newMatch()
@@ -274,7 +356,7 @@ struct MenuView: View {
                 .tracking(2)
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 17)
+                .padding(.vertical, 15)
                 .background(
                     Capsule().fill(LinearGradient(
                         colors: [Color(hex: 0xE0443A), Color(hex: 0xB4271E)],
