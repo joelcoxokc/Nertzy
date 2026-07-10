@@ -120,14 +120,16 @@ struct TableView: View {
         var out: [RC] = []
         guard let board = engine.boards.first else { return out }
 
-        // Stock — the whole face-down pile, with a hint of thickness
+        // Stock — the whole face-down pile, with a hint of thickness. Always
+        // instant: cards never travel *into* the stock, so an undo (or recycle)
+        // snaps them back onto the deck rather than sliding them home.
         let stockCount = board.stock.count
         for (i, c) in board.stock.enumerated() {
             let lift = min(CGFloat(i), 20) * 0.16
             out.append(RC(
                 id: c.id, card: c, pos: layout.stockPos.offsetBy(0, -lift),
                 z: 100 + Double(i), faceUp: false, w: layout.cardW, rot: 0,
-                shadowed: i == stockCount - 1
+                shadowed: i == stockCount - 1, instant: true
             ))
         }
         // Waste — top three fanned. A fresh flip appears in place, no travel.
