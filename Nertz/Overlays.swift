@@ -146,24 +146,32 @@ struct ScoreboardOverlay: View {
                 }
 
                 if engine.canAdvanceScoreboard {
-                    Button {
-                        engine.advanceFromScoreboard()
-                    } label: {
-                        Text(summary.winner != nil ? "NEW MATCH" : "NEXT ROUND")
-                            .font(.system(size: 18, weight: .black, design: .rounded))
-                            .tracking(1.5)
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 44)
-                            .padding(.vertical, 14)
-                            .background(
-                                Capsule().fill(LinearGradient(
-                                    colors: [Color(hex: 0x3A7BFF), Color(hex: 0x2455C8)],
-                                    startPoint: .top, endPoint: .bottom
-                                ))
-                            )
-                            .shadow(color: .black.opacity(0.3), radius: 8, y: 4)
+                    VStack(spacing: 12) {
+                        Button {
+                            engine.advanceFromScoreboard()
+                        } label: {
+                            Text(summary.winner != nil ? "NEW MATCH" : "NEXT ROUND")
+                                .font(.system(size: 18, weight: .black, design: .rounded))
+                                .tracking(1.5)
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 44)
+                                .padding(.vertical, 14)
+                                .background(
+                                    Capsule().fill(LinearGradient(
+                                        colors: [Color(hex: 0x3A7BFF), Color(hex: 0x2455C8)],
+                                        startPoint: .top, endPoint: .bottom
+                                    ))
+                                )
+                                .shadow(color: .black.opacity(0.3), radius: 8, y: 4)
+                        }
+                        .buttonStyle(.plain)
+                        Button {
+                            engine.quitToMenu()
+                        } label: {
+                            smallPill("QUIT")
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 } else {
                     // Guests wait for the host to deal the next one.
                     VStack(spacing: 10) {
@@ -175,14 +183,7 @@ struct ScoreboardOverlay: View {
                         Button {
                             engine.leaveOnlineMatch()
                         } label: {
-                            Text("LEAVE TABLE")
-                                .font(.system(size: 13, weight: .heavy, design: .rounded))
-                                .tracking(1)
-                                .foregroundStyle(.white.opacity(0.8))
-                                .padding(.horizontal, 18)
-                                .padding(.vertical, 9)
-                                .background(Capsule().fill(.white.opacity(0.08)))
-                                .overlay(Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 1))
+                            smallPill("LEAVE TABLE")
                         }
                         .buttonStyle(.plain)
                     }
@@ -203,6 +204,17 @@ struct ScoreboardOverlay: View {
                 ConfettiView(particleCount: 90).ignoresSafeArea()
             }
         }
+    }
+
+    private func smallPill(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 13, weight: .heavy, design: .rounded))
+            .tracking(1)
+            .foregroundStyle(.white.opacity(0.8))
+            .padding(.horizontal, 18)
+            .padding(.vertical, 9)
+            .background(Capsule().fill(.white.opacity(0.08)))
+            .overlay(Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 1))
     }
 
     private func playerRow(_ p: Int) -> some View {
