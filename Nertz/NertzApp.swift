@@ -32,6 +32,10 @@ struct RootView: View {
             if newPhase != .active {
                 engine.setPaused(true)
                 engine.autosave()
+            } else {
+                // A trip to Messages killed any pending code-table
+                // request — quietly re-open the same room.
+                CodeMatchmaker.rearmIfNeeded()
             }
         }
         .onChange(of: gameCenter.session != nil) { _, hasSession in
