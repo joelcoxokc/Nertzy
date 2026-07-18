@@ -34,6 +34,8 @@ struct MatchRecord: Codable, Identifiable {
     enum Mode: Codable, Equatable {
         case solo(Difficulty)
         case multiplayer
+        /// In-person scorekeeping — real cards, the app as the scorecard.
+        case live
     }
 
     let id: UUID                    // the engine's match token
@@ -206,7 +208,7 @@ final class StatsStore {
         var byID: [String: OpponentRecord] = [:]
         var order: [String] = []
         for m in matches {
-            guard m.mode == .multiplayer, let me = m.mySeat else { continue }
+            guard m.mode == .multiplayer || m.mode == .live, let me = m.mySeat else { continue }
             var myRoundWins = 0
             for r in m.rounds where me < r.deltas.count {
                 let mine = r.deltas[me]

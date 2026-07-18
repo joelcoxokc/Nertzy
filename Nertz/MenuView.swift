@@ -4,6 +4,7 @@ import GameKit
 struct MenuView: View {
     let engine: GameEngine
     let gameCenter: GameCenterManager
+    let live: LiveSession
 
     @AppStorage("opponents") private var opponents = 2
     @AppStorage("difficulty") private var difficultyRaw = Difficulty.classic.rawValue
@@ -12,6 +13,7 @@ struct MenuView: View {
     @State private var showStats = false
     @State private var showBoards = false
     @State private var showSettings = false
+    @State private var showLive = false
     @State private var onlineRoute: OnlineRoute?
     @State private var matchmakingError: String?
 
@@ -35,36 +37,40 @@ struct MenuView: View {
         ZStack {
             FeltBackground()
             VStack(spacing: 0) {
-                Spacer(minLength: 16)
+                Spacer(minLength: 8)
                 titleBlock
-                Spacer(minLength: 16)
-                VStack(spacing: 16) {
+                Spacer(minLength: 12)
+                VStack(spacing: 12) {
                     titledSection("OPPONENTS") { opponentPicker }
                     titledSection("TABLE SPEED") { difficultyPicker }
                     titledSection("PLAY TO") { targetPicker }
                 }
-                Spacer(minLength: 16)
+                Spacer(minLength: 12)
                 if let snap = MatchSaver.shared.saved {
                     continueButton(snap)
-                        .padding(.bottom, 10)
+                        .padding(.bottom, 8)
                 }
                 dealButton
-                playOnlineButton
-                    .padding(.top, 10)
+                HStack(spacing: 8) {
+                    playOnlineButton
+                    inPersonButton
+                }
+                .padding(.top, 8)
                 onlineStatusLine
                 HStack(spacing: 10) {
                     statsButton
-                    if gameCenterOn, gameCenter.auth == .authenticated {
-                        boardsButton
-                    }
                     gameCenterToggle
-                    settingsButton
                 }
-                .padding(.top, 10)
+                .padding(.top, 8)
                 Spacer(minLength: 6)
             }
             .padding(.horizontal, 26)
             .frame(maxWidth: 480)
+            .overlay(alignment: .topTrailing) {
+                cornerButtons
+                    .padding(.top, 10)
+                    .padding(.trailing, 20)
+            }
         }
         .fullScreenCover(isPresented: $showStats) {
             StatsView()
@@ -75,6 +81,9 @@ struct MenuView: View {
         .fullScreenCover(isPresented: $showBoards) {
             GameCenterBoardsView { showBoards = false }
                 .ignoresSafeArea()
+        }
+        .fullScreenCover(isPresented: $showLive) {
+            LiveHubView(session: live) { showLive = false }
         }
         .fullScreenCover(item: $onlineRoute) { route in
             switch route {
@@ -142,6 +151,10 @@ struct MenuView: View {
             if ProcessInfo.processInfo.arguments.contains("-showhub") {
                 onlineRoute = .hub
             }
+            if ProcessInfo.processInfo.arguments.contains("-showlive")
+                || ProcessInfo.processInfo.arguments.contains("-livedemo") {
+                showLive = true
+            }
             if ProcessInfo.processInfo.arguments.contains("-showsettings") {
                 showSettings = true
             }
@@ -168,28 +181,28 @@ struct MenuView: View {
     // MARK: Title
 
     private var titleBlock: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 8) {
             ZStack {
-                CardView(card: Card(owner: 1, suit: .spades, rank: 1), faceUp: true, width: 54)
+                CardView(card: Card(owner: 1, suit: .spades, rank: 1), faceUp: true, width: 48)
                     .rotationEffect(.degrees(-14))
-                    .offset(x: -40, y: 7)
+                    .offset(x: -36, y: 6)
                     .shadow(color: .black.opacity(0.3), radius: 8, y: 5)
-                CardView(card: Card(owner: 2, suit: .diamonds, rank: 13), faceUp: true, width: 54)
+                CardView(card: Card(owner: 2, suit: .diamonds, rank: 13), faceUp: true, width: 48)
                     .rotationEffect(.degrees(13))
-                    .offset(x: 40, y: 7)
+                    .offset(x: 36, y: 6)
                     .shadow(color: .black.opacity(0.3), radius: 8, y: 5)
-                CardView(card: Card(owner: 0, suit: .hearts, rank: 1), faceUp: true, width: 54)
+                CardView(card: Card(owner: 0, suit: .hearts, rank: 1), faceUp: true, width: 48)
                     .shadow(color: .black.opacity(0.35), radius: 10, y: 6)
             }
-            .frame(height: 88)
-            VStack(spacing: 5) {
+            .frame(height: 74)
+            VStack(spacing: 4) {
                 Text("NERTZY")
-                    .font(.system(size: 50, weight: .black, design: .rounded))
+                    .font(.system(size: 44, weight: .black, design: .rounded))
                     .tracking(5)
                     .foregroundStyle(.white)
                     .shadow(color: .black.opacity(0.4), radius: 8, y: 4)
                 Text("The fastest card game in the world")
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.65))
             }
         }
@@ -255,7 +268,7 @@ struct MenuView: View {
                             .foregroundStyle(selected ? Color(hex: 0x7CFFB0) : .white.opacity(0.25))
                     }
                     .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, 6)
                     .background(
                         RoundedRectangle(cornerRadius: 16, style: .continuous)
                             .fill(.white.opacity(selected ? 0.18 : 0.07))
@@ -364,7 +377,7 @@ struct MenuView: View {
                 .tracking(2)
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 15)
+                .padding(.vertical, 13)
                 .background(
                     Capsule().fill(LinearGradient(
                         colors: [Color(hex: 0xE0443A), Color(hex: 0xB4271E)],
@@ -383,6 +396,27 @@ struct MenuView: View {
         gameCenterOn && gameCenter.auth == .authenticated
     }
 
+    /// The half-width multiplayer doors — same chrome, different colors.
+    private func doorLabel(icon: String, text: String, colors: [Color]) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .black))
+            Text(text)
+                .font(.system(size: 15, weight: .black, design: .rounded))
+                .tracking(1.5)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 13)
+        .background(
+            Capsule().fill(LinearGradient(colors: colors, startPoint: .top, endPoint: .bottom))
+        )
+        .overlay(Capsule().strokeBorder(.white.opacity(0.25), lineWidth: 1.5))
+        .shadow(color: .black.opacity(0.35), radius: 12, y: 6)
+    }
+
     private var playOnlineButton: some View {
         Button {
             Haptics.fanfare()
@@ -390,28 +424,33 @@ struct MenuView: View {
             engine.onlineFarewell = nil
             onlineRoute = .hub
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "wifi")
-                    .font(.system(size: 15, weight: .black))
-                Text(gameCenterOn && gameCenter.auth == .authenticating ? "CONNECTING…" : "PLAY ONLINE")
-                    .font(.system(size: 17, weight: .black, design: .rounded))
-                    .tracking(2)
-            }
-            .foregroundStyle(.white)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-            .background(
-                Capsule().fill(LinearGradient(
-                    colors: [Color(hex: 0x2E6BE6), Color(hex: 0x1E4FB8)],
-                    startPoint: .top, endPoint: .bottom
-                ))
+            doorLabel(
+                icon: "wifi",
+                text: gameCenterOn && gameCenter.auth == .authenticating ? "CONNECTING…" : "PLAY ONLINE",
+                colors: [Color(hex: 0x2E6BE6), Color(hex: 0x1E4FB8)]
             )
-            .overlay(Capsule().strokeBorder(.white.opacity(0.25), lineWidth: 1.5))
-            .shadow(color: .black.opacity(0.35), radius: 12, y: 6)
         }
         .buttonStyle(.plain)
         .disabled(!canPlayOnline)
         .opacity(canPlayOnline ? 1 : 0.4)
+    }
+
+    // MARK: In person (live scorekeeping)
+
+    /// Real cards, the app as the shared scorecard. Needs no Game
+    /// Center — nearby devices find each other directly.
+    private var inPersonButton: some View {
+        Button {
+            Haptics.fanfare()
+            showLive = true
+        } label: {
+            doorLabel(
+                icon: "person.3.fill",
+                text: "IN PERSON",
+                colors: [Color(hex: 0xE0862A), Color(hex: 0xB4611B)]
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
@@ -427,6 +466,10 @@ struct MenuView: View {
     private var statusMessage: String? {
         if let matchmakingError { return matchmakingError }
         if let farewell = engine.onlineFarewell { return farewell }
+        // An unfinished game night outranks pleasantries.
+        if let save = LiveSaver.shared.saved {
+            return "In person · \(save.match.summaryLine)"
+        }
         guard gameCenterOn else { return "Turn on Game Center to play online" }
         switch gameCenter.auth {
         case .failed(let reason): return reason
@@ -440,6 +483,17 @@ struct MenuView: View {
         if engine.onlineFarewell != nil { return true }
         if case .failed = gameCenter.auth { return true }
         return false
+    }
+
+    /// Settings (and the world's standings, once Game Center is live)
+    /// float in the top-right corner — the bottom row stays roomy.
+    private var cornerButtons: some View {
+        HStack(spacing: 8) {
+            if gameCenterOn, gameCenter.auth == .authenticated {
+                boardsButton
+            }
+            settingsButton
+        }
     }
 
     /// The world's standings — only shown once Game Center is live.

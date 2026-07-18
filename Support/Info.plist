@@ -24,6 +24,13 @@
 	<true/>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_nertzy-score._tcp</string>
+		<string>_nertzy-score._udp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Nertzy finds nearby tables so everyone at your game night shares one live scorecard.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchScreen</key>

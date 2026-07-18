@@ -12,12 +12,13 @@ struct NertzApp: App {
 struct RootView: View {
     @State private var engine = GameEngine()
     @State private var gameCenter = GameCenterManager()
+    @State private var live = LiveSession()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack {
             if engine.phase == .menu {
-                MenuView(engine: engine, gameCenter: gameCenter)
+                MenuView(engine: engine, gameCenter: gameCenter, live: live)
                     .transition(.opacity)
             } else {
                 TableView(engine: engine)
@@ -34,8 +35,10 @@ struct RootView: View {
                 engine.autosave()
             } else {
                 // A trip to Messages killed any pending code-table
-                // request — quietly re-open the same room.
+                // request — quietly re-open the same room. Same story
+                // for an in-person room's radios.
                 CodeMatchmaker.rearmIfNeeded()
+                live.rearmIfNeeded()
             }
         }
         .onChange(of: gameCenter.session != nil) { _, hasSession in
@@ -75,6 +78,13 @@ struct RootView: View {
             } else if args.contains("-autoresume") {
                 // Dev: skip the CONTINUE tap (simctl can't touch the screen).
                 engine.resumeSavedMatch()
+            }
+            if args.contains("-livedemo") {
+                // Dev: a staged in-person night for screenshots — no
+                // radios, no disk, and no record book unless the run is
+                // deliberately exercising the recorder.
+                StatsStore.shared.recordingEnabled = args.contains("-liverecordtest")
+                live.debugSeedDemo()
             }
         }
     }
