@@ -21,6 +21,7 @@ struct OnlineHubView: View {
     @State private var humans = 2
     @State private var joinCode = ""
     @State private var errorText: String?
+    @State private var copied = false
     @FocusState private var codeFieldFocused: Bool
 
     var body: some View {
@@ -41,13 +42,15 @@ struct OnlineHubView: View {
                     searchingBody(
                         title: "YOUR TABLE CODE",
                         code: code,
-                        hint: "Tell your friends — they tap JOIN WITH CODE.\nThe table opens when \(TableCode.humans(in: code) ?? 2) players are looking."
+                        hint: "Send it to your friends — they tap JOIN WITH CODE.\nThe table opens when \(TableCode.humans(in: code) ?? 2) players are looking.",
+                        shareable: true
                     )
                 case .joining(let code):
                     searchingBody(
                         title: "JOINING TABLE",
                         code: code,
-                        hint: "Waiting for everyone to arrive…"
+                        hint: "Waiting for everyone to arrive…",
+                        shareable: false
                     )
                 }
                 Spacer(minLength: 20)
@@ -63,7 +66,14 @@ struct OnlineHubView: View {
             .padding(.horizontal, 26)
             .frame(maxWidth: 480)
         }
-        .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
+        .onAppear {
+            UIApplication.shared.isIdleTimerDisabled = true
+            // Dev: render the hosting state without Game Center (simctl
+            // can't tap GET A CODE).
+            if ProcessInfo.processInfo.arguments.contains("-mockhosting") {
+                state = .hosting(code: "KQJZ3")
+            }
+        }
         .onDisappear { CodeMatchmaker.cancel() }
     }
 
@@ -174,7 +184,7 @@ struct OnlineHubView: View {
 
     // MARK: Searching — big code, patient spinner
 
-    private func searchingBody(title: String, code: String, hint: String) -> some View {
+    private func searchingBody(title: String, code: String, hint: String, shareable: Bool) -> some View {
         VStack(spacing: 18) {
             Text(title)
                 .font(.system(size: 13, weight: .heavy, design: .rounded))
@@ -194,6 +204,26 @@ struct OnlineHubView: View {
                     RoundedRectangle(cornerRadius: 22, style: .continuous)
                         .strokeBorder(.white.opacity(0.2), lineWidth: 1.5)
                 )
+                .onTapGesture { if shareable { copy(code) } }
+            if shareable {
+                HStack(spacing: 10) {
+                    Button {
+                        copy(code)
+                    } label: {
+                        actionPill(
+                            icon: copied ? "checkmark" : "doc.on.doc",
+                            label: copied ? "COPIED" : "COPY CODE"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    // The share sheet floats over the app, so sending the
+                    // code this way never even backgrounds the room.
+                    ShareLink(item: "Nertz? Join my table in Nertzy — code \(code)") {
+                        actionPill(icon: "message.fill", label: "SEND IT")
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
             ProgressView()
                 .tint(.white)
                 .scaleEffect(1.3)
@@ -203,6 +233,31 @@ struct OnlineHubView: View {
                 .foregroundStyle(.white.opacity(0.6))
                 .multilineTextAlignment(.center)
         }
+    }
+
+    private func copy(_ code: String) {
+        UIPasteboard.general.string = code
+        Haptics.score()
+        copied = true
+        Task {
+            try? await Task.sleep(for: .seconds(1.6))
+            copied = false
+        }
+    }
+
+    private func actionPill(icon: String, label: String) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .bold))
+            Text(label)
+                .font(.system(size: 13, weight: .heavy, design: .rounded))
+                .tracking(1.5)
+        }
+        .foregroundStyle(.white.opacity(0.9))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Capsule().fill(.white.opacity(0.10)))
+        .overlay(Capsule().strokeBorder(.white.opacity(0.2), lineWidth: 1))
     }
 
     // MARK: Actions

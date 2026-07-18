@@ -136,17 +136,45 @@ enum TableCode {
 }
 
 /// Programmatic matchmaking for code tables — no Apple sheet at all.
+///
+/// The pending request IS the room, and GameKit kills it the moment the
+/// app backgrounds (say, a trip to Messages to text the code). So the
+/// open room lives here — code + callbacks — and `rearmIfNeeded` quietly
+/// re-issues the request on every return to the foreground. Same code →
+/// same playerGroup → the same room, so a texted code stays good.
 @MainActor
 enum CodeMatchmaker {
+    /// The open room, if any. Cleared by `cancel()`, a found match, or
+    /// a real failure — never by a background trip.
+    private(set) static var activeCode: String?
+    private static var onMatch: ((GKMatch) -> Void)?
+    private static var onError: ((String) -> Void)?
+
     static func start(
         code: String,
         onMatch: @escaping (GKMatch) -> Void,
         onError: @escaping (String) -> Void
     ) {
-        guard let humans = TableCode.humans(in: code) else {
+        guard TableCode.humans(in: code) != nil else {
             onError("That doesn't look like a table code")
             return
         }
+        activeCode = code
+        Self.onMatch = onMatch
+        Self.onError = onError
+        request()
+    }
+
+    /// Foreground re-entry: if a room is open, ask GameKit again with
+    /// the same code. No-op when there's nothing to revive.
+    static func rearmIfNeeded() {
+        guard activeCode != nil else { return }
+        GKMatchmaker.shared().cancel()      // sweep any half-dead request
+        request()
+    }
+
+    private static func request() {
+        guard let code = activeCode, let humans = TableCode.humans(in: code) else { return }
         let request = GKMatchRequest()
         request.minPlayers = humans
         request.maxPlayers = humans
@@ -154,15 +182,33 @@ enum CodeMatchmaker {
         GKMatchmaker.shared().findMatch(for: request) { match, error in
             Task { @MainActor in
                 if let match {
-                    onMatch(match)
+                    let deliver = onMatch
+                    clear()
+                    deliver?(match)
                 } else if let error {
-                    onError(error.localizedDescription)
+                    // Backgrounding (or our own re-arm sweep) cancels the
+                    // request — the room stays open for the next re-arm.
+                    // Only real failures reach the hub.
+                    let ns = error as NSError
+                    if ns.domain == GKErrorDomain, ns.code == GKError.cancelled.rawValue {
+                        return
+                    }
+                    let deliver = onError
+                    clear()
+                    deliver?(error.localizedDescription)
                 }
             }
         }
     }
 
+    private static func clear() {
+        activeCode = nil
+        onMatch = nil
+        onError = nil
+    }
+
     static func cancel() {
+        clear()
         GKMatchmaker.shared().cancel()
     }
 }
