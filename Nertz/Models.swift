@@ -182,11 +182,11 @@ enum Difficulty: String, CaseIterable, Identifiable, Codable {
     var params: DifficultyParams {
         switch self {
         case .chill:
-            return DifficultyParams(interval: 3.8...7.0, skipChance: 0.32, callDelay: 7.0...11.0, smart: false, reaction: 1.5)
+            return DifficultyParams(interval: 3.8...7.0, skipChance: 0.32, callDelay: 1.2...2.0, smart: false, reaction: 1.5)
         case .classic:
-            return DifficultyParams(interval: 2.2...4.0, skipChance: 0.14, callDelay: 4.0...6.5, smart: true, reaction: 1.0)
+            return DifficultyParams(interval: 2.2...4.0, skipChance: 0.14, callDelay: 0.8...1.4, smart: true, reaction: 1.0)
         case .frantic:
-            return DifficultyParams(interval: 1.1...2.1, skipChance: 0.05, callDelay: 1.5...2.8, smart: true, reaction: 0.6)
+            return DifficultyParams(interval: 1.1...2.1, skipChance: 0.05, callDelay: 0.5...0.9, smart: true, reaction: 0.6)
         }
     }
 }

@@ -6,6 +6,8 @@ struct TableView: View {
     @State private var drag: DragInfo?
     @State private var hover: DropTarget?
     @State private var confirmLeave = false
+    @AppStorage(TablePrefs.leftHandKey) private var leftHandMode = false
+    @AppStorage(TablePrefs.tapToPlayKey) private var tapToPlay = true
 
     struct DragInfo {
         let unit: [Card]
@@ -23,7 +25,8 @@ struct TableView: View {
             let tableWidth = min(geo.size.width, 700)
             let layout = TableLayout(
                 size: CGSize(width: tableWidth, height: geo.size.height),
-                playerCount: engine.playerCount
+                playerCount: engine.playerCount,
+                leftHanded: leftHandMode
             )
             ZStack {
                 tableChrome(layout)
@@ -235,7 +238,7 @@ struct TableView: View {
                 .opacity(rc.opacity)
                 .position(rc.pos)
                 .zIndex(rc.z)
-                .onTapGesture { engine.handleTap(on: rc.card) }
+                .onTapGesture { engine.handleTap(on: rc.card, tapPlays: tapToPlay) }
                 .gesture(dragGesture(for: rc.card, layout: layout))
                 .animation(
                     rc.dragging || rc.instant
@@ -277,15 +280,25 @@ struct TableView: View {
                 }
                 guard drag?.leadID == card.id else { return }
                 drag?.translation = value.translation
-                hover = currentTarget(layout)
+                hover = dropTarget(layout, translation: value.translation, predicted: value.translation)
             }
-            .onEnded { _ in
+            .onEnded { value in
                 guard let d = drag, d.leadID == card.id else { return }
-                let target = currentTarget(layout)
+                let target = dropTarget(
+                    layout,
+                    translation: value.translation,
+                    predicted: value.predictedEndTranslation
+                )
                 var spot: CGPoint?
                 if case .foundation(nil)? = target, let base = d.bases[d.leadID] {
-                    // A fresh pile starts right where the card was dropped.
-                    spot = layout.scatterSpot(at: base.adding(d.translation))
+                    // A fresh pile starts where the card was headed.
+                    let thrown = thrownPoint(
+                        from: base,
+                        translation: value.translation,
+                        predicted: value.predictedEndTranslation,
+                        layout: layout
+                    )
+                    spot = layout.scatterSpot(at: thrown)
                 }
                 engine.humanDrop(source: d.source, target: target, spot: spot)
                 drag = nil
@@ -293,48 +306,81 @@ struct TableView: View {
             }
     }
 
-    private func currentTarget(_ layout: TableLayout) -> DropTarget? {
+    /// Where a released card is headed: the release point plus a capped
+    /// continuation of the flick, so a card thrown toward a pile keeps
+    /// sailing instead of dying where the finger lifted.
+    private func thrownPoint(
+        from base: CGPoint,
+        translation: CGSize,
+        predicted: CGSize,
+        layout: TableLayout
+    ) -> CGPoint {
+        let release = base.adding(translation)
+        let projected = base.adding(predicted)
+        let carry = release.distance(to: projected)
+        let maxCarry = layout.cardH * 2.4
+        guard carry > maxCarry else { return projected }
+        let t = maxCarry / carry
+        return CGPoint(
+            x: release.x + (projected.x - release.x) * t,
+            y: release.y + (projected.y - release.y) * t
+        )
+    }
+
+    /// The drop (or hover) target for the current drag. During the drag,
+    /// `predicted == translation`; on release the gesture's projection lets
+    /// a flick reach targets the finger never touched. Legality steers the
+    /// choice: a throw in the right direction lands on the nearest pile
+    /// that actually takes the cards.
+    private func dropTarget(_ layout: TableLayout, translation: CGSize, predicted: CGSize) -> DropTarget? {
         guard let d = drag, let lead = d.unit.first, let base = d.bases[lead.id] else { return nil }
-        let point = base.adding(d.translation)
+        let point = base.adding(translation)
 
         // Released next to where it was picked up = putting it back.
         guard point.distance(to: base) > layout.cardW * 0.75 else { return nil }
 
+        let thrown = thrownPoint(from: base, translation: translation, predicted: predicted, layout: layout)
+
         // Anywhere on the open felt (grown by a card, kept clear of the work
-        // row) — a single card finds its own pile out there.
+        // row) — a single card finds its own pile out there. No taker on
+        // the felt falls through: an overshot throw can still reach the
+        // work piles below.
         if d.unit.count == 1 {
             var zone = layout.scatterZone.insetBy(dx: -layout.cardW, dy: 0)
             zone.origin.y -= layout.cardW
             let maxY = layout.workTopY - layout.cardH * 0.95
             zone.size.height = min(zone.size.height + layout.cardW * 2, maxY - zone.origin.y)
-            if zone.contains(point) {
-                return foundationTarget(for: lead, near: point, layout: layout)
+            if zone.contains(thrown),
+               let target = foundationTarget(for: lead, near: thrown, layout: layout) {
+                return target
             }
         }
-        // Work pile by geometry, with a wide catch.
-        if let wi = layout.workIndex(at: point) {
+        // Work pile directly under the throw — take it when it fits.
+        let hovered = layout.workIndex(at: thrown)
+        if let wi = hovered, engine.canDrop(d.unit, on: .work(wi)) {
             return .work(wi)
         }
-        // Snap-assist: you clearly moved it — send it to the nearest legal
-        // home within about two cards of the release point.
+        // Otherwise the nearest home that takes the unit, within a generous
+        // reach of the throw.
         var best: (target: DropTarget, dist: CGFloat)?
         if d.unit.count == 1 {
             for (i, pile) in engine.foundations.enumerated() where engine.pileAccepts(lead, at: i) {
-                let dist = layout.scatterPoint(pile.spot).distance(to: point)
+                let dist = layout.scatterPoint(pile.spot).distance(to: thrown)
                 if dist < (best?.dist ?? .infinity) { best = (.foundation(i), dist) }
             }
         }
         for w in 0..<4 where engine.canDrop(d.unit, on: .work(w)) {
             let count = engine.boards.first?.work[w].count ?? 0
             let landing = layout.workCardPos(pile: w, index: count, count: count + 1)
-            let dist = landing.distance(to: point)
+            let dist = landing.distance(to: thrown)
             if dist < (best?.dist ?? .infinity) { best = (.work(w), dist) }
         }
-        // Must be closer to the new home than to where it came from, so a
-        // small fumble near the origin still cancels.
-        if let best, best.dist < min(layout.cardW * 2.2, point.distance(to: base)) {
+        if let best, best.dist < layout.cardW * 3.0 {
             return best.target
         }
+        // Nothing in reach takes it. Report the pile actually under the
+        // drop so the shake says "doesn't fit" instead of silently snapping back.
+        if let hovered { return .work(hovered) }
         return nil
     }
 

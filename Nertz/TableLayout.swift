@@ -9,6 +9,9 @@ import SwiftUI
 struct TableLayout {
     let size: CGSize
     let playerCount: Int    // includes you
+    /// Mirrors the whole bottom row for left-handed play: nerts pile and
+    /// stock/waste at the left thumb, work piles hugging the right.
+    var leftHanded = false
 
     // MARK: Card size — one size for every card on the table
 
@@ -52,18 +55,25 @@ struct TableLayout {
     }
 
     // MARK: Player columns — work piles hug the left, nerts pile at the right thumb
+    // (Everything below is computed right-handed; `handed` reflects the
+    // final point across the centerline when left-hand mode is on.)
+
+    private func handed(_ p: CGPoint) -> CGPoint {
+        leftHanded ? CGPoint(x: size.width - p.x, y: p.y) : p
+    }
 
     var colGap: CGFloat { 12 }
-    func colX(_ i: Int) -> CGFloat { 12 + cardW / 2 + CGFloat(i) * (cardW + colGap) }
-    var rightColX: CGFloat { size.width - 12 - cardW / 2 }
+    private func colX(_ i: Int) -> CGFloat { 12 + cardW / 2 + CGFloat(i) * (cardW + colGap) }
+    private var rightColX: CGFloat { size.width - 12 - cardW / 2 }
 
-    var nertsPos: CGPoint { CGPoint(x: rightColX, y: workTopY) }
-    func workBase(_ i: Int) -> CGPoint { CGPoint(x: colX(i), y: workTopY) }
+    var nertsPos: CGPoint { handed(CGPoint(x: rightColX, y: workTopY)) }
+    func workBase(_ i: Int) -> CGPoint { handed(CGPoint(x: colX(i), y: workTopY)) }
 
     /// How deep a column's fan may run. The raised waste hangs over the
     /// right end of the fan zone, so a column beneath it stops higher.
+    /// (Overlaps are mirror-invariant, so this stays in right-handed space.)
     func fanBottomLimit(_ pile: Int) -> CGFloat {
-        let wasteLeft = wastePos(depth: 2).x - cardW / 2
+        let wasteLeft = rawWastePos(depth: 2).x - cardW / 2
         return colX(pile) + cardW / 2 >= wasteLeft - 6
             ? wasteY - cardH - 8
             : bottomRowY - cardH - 8
@@ -79,23 +89,25 @@ struct TableLayout {
 
     /// The deck sits level with the waste fan so the stock and its dispense
     /// pile read as one row across the bottom-right.
-    var stockPos: CGPoint { CGPoint(x: rightColX, y: wasteY) }
+    var stockPos: CGPoint { handed(CGPoint(x: rightColX, y: wasteY)) }
 
     /// The waste rides above the undo/pause row, clear of the screen bottom.
     var wasteY: CGFloat { size.height - 60 - cardH / 2 }
 
     /// depth 0 = top card (closest to the stock), deeper cards fan left —
     /// spread wide enough that each buried card's left-edge rank shows.
-    func wastePos(depth: Int) -> CGPoint {
+    private func rawWastePos(depth: Int) -> CGPoint {
         let d = CGFloat(min(depth, 2))
-        return CGPoint(x: stockPos.x - cardW - 14 - d * 28, y: wasteY)
+        return CGPoint(x: rightColX - cardW - 14 - d * 28, y: wasteY)
     }
+
+    func wastePos(depth: Int) -> CGPoint { handed(rawWastePos(depth: depth)) }
 
     // MARK: Buttons — undo centered under the waste fan, pause under the stock deck
 
     var buttonRowY: CGFloat { size.height - 32 }
-    var undoPos: CGPoint { CGPoint(x: wastePos(depth: 1).x, y: buttonRowY) }
-    var pausePos: CGPoint { CGPoint(x: stockPos.x, y: buttonRowY) }
+    var undoPos: CGPoint { handed(CGPoint(x: rawWastePos(depth: 1).x, y: buttonRowY)) }
+    var pausePos: CGPoint { handed(CGPoint(x: rightColX, y: buttonRowY)) }
 
     // MARK: Seats — bare nerts-count badges pinned to the table edges
 

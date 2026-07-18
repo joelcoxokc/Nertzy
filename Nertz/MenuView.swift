@@ -11,6 +11,7 @@ struct MenuView: View {
     @AppStorage(GameCenterManager.settingKey) private var gameCenterOn = false
     @State private var showStats = false
     @State private var showBoards = false
+    @State private var showSettings = false
     @State private var onlineRoute: OnlineRoute?
     @State private var matchmakingError: String?
 
@@ -57,6 +58,7 @@ struct MenuView: View {
                         boardsButton
                     }
                     gameCenterToggle
+                    settingsButton
                 }
                 .padding(.top, 10)
                 Spacer(minLength: 6)
@@ -66,6 +68,9 @@ struct MenuView: View {
         }
         .fullScreenCover(isPresented: $showStats) {
             StatsView()
+        }
+        .sheet(isPresented: $showSettings) {
+            TableSettingsSheet()
         }
         .fullScreenCover(isPresented: $showBoards) {
             GameCenterBoardsView { showBoards = false }
@@ -136,6 +141,9 @@ struct MenuView: View {
             }
             if ProcessInfo.processInfo.arguments.contains("-showhub") {
                 onlineRoute = .hub
+            }
+            if ProcessInfo.processInfo.arguments.contains("-showsettings") {
+                showSettings = true
             }
         }
     }
@@ -475,6 +483,22 @@ struct MenuView: View {
             .padding(.vertical, 10)
             .background(Capsule().fill(.white.opacity(0.08)))
             .overlay(Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var settingsButton: some View {
+        Button {
+            Haptics.flip()
+            showSettings = true
+        } label: {
+            Image(systemName: "gearshape.fill")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(.white.opacity(0.75))
+                .padding(.horizontal, 13)
+                .padding(.vertical, 10)
+                .background(Capsule().fill(.white.opacity(0.08)))
+                .overlay(Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 1))
         }
         .buttonStyle(.plain)
     }
