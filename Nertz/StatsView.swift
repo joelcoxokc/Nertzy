@@ -141,21 +141,31 @@ struct StatsView: View {
         .statsPanel()
     }
 
-    // MARK: Online
+    // MARK: Humans (online tables + in-person nights)
 
     /// Your record against actual people — hidden until you've played
     /// someone.
     @ViewBuilder
     private var onlineSection: some View {
-        let t = store.tally(mode: .multiplayer)
-        if t.roundsPlayed > 0 {
+        let online = store.tally(mode: .multiplayer)
+        let live = store.tally(mode: .live)
+        if online.roundsPlayed > 0 || live.roundsPlayed > 0 {
             titledSection("VS HUMANS") {
                 VStack(spacing: 8) {
-                    recordRow(
-                        emoji: "🌐", label: "All online play",
-                        matchesWon: t.matchesWon, matchesLost: t.matchesFinished - t.matchesWon,
-                        roundsWon: t.roundsWon, roundsPlayed: t.roundsPlayed
-                    )
+                    if online.roundsPlayed > 0 {
+                        recordRow(
+                            emoji: "🌐", label: "All online play",
+                            matchesWon: online.matchesWon, matchesLost: online.matchesFinished - online.matchesWon,
+                            roundsWon: online.roundsWon, roundsPlayed: online.roundsPlayed
+                        )
+                    }
+                    if live.roundsPlayed > 0 {
+                        recordRow(
+                            emoji: "🃏", label: "In person",
+                            matchesWon: live.matchesWon, matchesLost: live.matchesFinished - live.matchesWon,
+                            roundsWon: live.roundsWon, roundsPlayed: live.roundsPlayed
+                        )
+                    }
                     ForEach(store.opponentRecords()) { r in
                         recordRow(
                             emoji: r.emoji, label: r.name,
@@ -190,7 +200,7 @@ struct StatsView: View {
         }()
         let meta: String = {
             let tail = "\(m.rounds.count) rd\(m.rounds.count == 1 ? "" : "s") · \(m.started.formatted(date: .abbreviated, time: .omitted))"
-            if m.mode == .multiplayer, let opp = m.humanOpponents.first {
+            if m.mode == .multiplayer || m.mode == .live, let opp = m.humanOpponents.first {
                 return "vs \(opp.name) · \(tail)"
             }
             return tail
