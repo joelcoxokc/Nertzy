@@ -3,6 +3,9 @@ import SwiftUI
 struct PauseOverlay: View {
     let engine: GameEngine
 
+    @AppStorage(TablePrefs.leftHandKey) private var leftHandMode = false
+    @AppStorage(TablePrefs.tapToPlayKey) private var tapToPlay = true
+
     var body: some View {
         ZStack {
             Color.black.opacity(0.6).ignoresSafeArea()
@@ -61,6 +64,17 @@ struct PauseOverlay: View {
                     )
                 }
                 .buttonStyle(.plain)
+
+                SettingToggleRow(
+                    title: "LEFT-HAND MODE",
+                    blurb: "Nerts pile and stock at your left thumb.",
+                    isOn: $leftHandMode
+                )
+                SettingToggleRow(
+                    title: "TAP TO PLAY",
+                    blurb: "Off, cards move only when you drag them.",
+                    isOn: $tapToPlay
+                )
 
                 HStack(spacing: 10) {
                     Button {

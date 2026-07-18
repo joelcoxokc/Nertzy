@@ -173,6 +173,13 @@ final class GameEngine {
         p < aiCallAt.count && aiCallAt[p] != nil
     }
 
+    /// Someone's pile just emptied and their Nerts call is a beat away.
+    /// The table holds its breath: no bot squeezes in extra plays while
+    /// the call is coming. (You can still race a last card in by hand.)
+    private var nertsCallPending: Bool {
+        humanCallAt != nil || aiCallAt.contains { $0 != nil }
+    }
+
     // MARK: - Seat identity & badges
 
     /// Names/emojis for the current table; empty in solo (falls back to
@@ -474,7 +481,7 @@ final class GameEngine {
                 // A bounced card refilled the pile — cancel the call.
                 aiCallAt[p] = nil
             }
-            if now >= aiNextMove[p] {
+            if now >= aiNextMove[p], !nertsCallPending {
                 let action = performAIMove(p, now: now)
                 let base = sampleInterval()
                 aiNextMove[p] = now.addingTimeInterval(action == .flip ? base * 0.55 : base)
@@ -680,13 +687,16 @@ final class GameEngine {
         Sound.play(.flip)
     }
 
-    func handleTap(on card: Card) {
+    /// `tapPlays: false` is drag-only mode: tapping the stock still flips
+    /// it (there's no other way), but no card travels on a tap.
+    func handleTap(on card: Card, tapPlays: Bool = true) {
         guard phase == .playing, !dealing, !paused, card.owner == 0 else { return }
         let b = boards[0]
         if b.stock.contains(card) {
             humanTapStock()
             return
         }
+        guard tapPlays else { return }
         // Buried waste / nerts cards are inert.
         if b.waste.contains(card), b.waste.last != card { return }
         if b.nerts.contains(card), b.nerts.last != card { return }
