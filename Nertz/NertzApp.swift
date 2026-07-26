@@ -31,7 +31,7 @@ struct RootView: View {
             // hand. The match also goes to disk, so even a swipe-kill
             // from the app switcher can be picked back up.
             if newPhase != .active {
-                engine.setPaused(true)
+                engine.appMovedToBackground()
                 engine.autosave()
             } else {
                 // A trip to Messages killed any pending code-table
@@ -74,7 +74,18 @@ struct RootView: View {
                     difficulty: args.contains("-frantic") ? .frantic : .classic,
                     targetScore: args.contains("-shortmatch") ? 1 : 100
                 )
-                engine.newMatch()
+                if args.contains("-mockonline") {
+                    engine.debugPlayFakeOnlineTable()
+                } else {
+                    engine.newMatch()
+                }
+                if args.contains("-mockpaused") {
+                    // Dev: simctl can't tap the pause button.
+                    Task {
+                        try? await Task.sleep(for: .seconds(3))
+                        engine.requestPause(true)
+                    }
+                }
             } else if args.contains("-autoresume") {
                 // Dev: skip the CONTINUE tap (simctl can't touch the screen).
                 engine.resumeSavedMatch()

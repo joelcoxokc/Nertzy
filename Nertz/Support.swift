@@ -108,6 +108,43 @@ func titledSection<Content: View>(
     .frame(maxWidth: .infinity, alignment: .leading)
 }
 
+// MARK: - Shared controls
+
+/// The quiet secondary action on a dark panel — QUIT, LEAVE TABLE,
+/// NEW MATCH. One recipe so the overlays can't drift apart.
+func smallPill(_ title: String) -> some View {
+    Text(title)
+        .font(.system(size: 13, weight: .heavy, design: .rounded))
+        .tracking(1)
+        .foregroundStyle(.white.opacity(0.8))
+        .padding(.horizontal, 18)
+        .padding(.vertical, 9)
+        .background(Capsule().fill(.white.opacity(0.08)))
+        .overlay(Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 1))
+}
+
+/// An icon in a dark disc — the table's HUD buttons (pause, undo,
+/// leave). They sit at different corners but read as one family.
+struct HUDCircleButton: View {
+    let icon: String
+    var size: CGFloat = 40
+    var iconSize: CGFloat = 14
+    var opacity: Double = 0.85
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: iconSize, weight: .bold))
+                .foregroundStyle(.white.opacity(opacity))
+                .frame(width: size, height: size)
+                .background(Circle().fill(Color.black.opacity(0.28)))
+                .overlay(Circle().strokeBorder(.white.opacity(0.12), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 // MARK: - Felt table background
 
 struct FeltBackground: View {
