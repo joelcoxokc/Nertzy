@@ -24,12 +24,17 @@ protocol TableAuthorityDelegate: AnyObject {
     /// A new round is starting table-wide (networked guests get this
     /// when the host deals; solo never does — the engine deals itself).
     func roundStarted(round: Int)
-    /// A remote player called nerts — end the round with them as caller.
-    func remoteNertsCall(seat: Int)
+    /// A remote player called nerts — end the round with them as
+    /// caller. `tapAt` is when their pile emptied, in the host's clock.
+    func remoteNertsCall(seat: Int, at tapAt: TimeInterval)
     /// A departed player's seat is bot-driven from the next round.
     func seatBecameBot(seat: Int)
     /// The online table died (host left, connection lost) — bail out.
     func tableClosed(reason: String)
+    /// The table froze or thawed. `seat` is who is holding the pause
+    /// (local seats, 0 = you), or nil when play resumes. Online this is
+    /// the host's declaration, so every device freezes on one word.
+    func tablePauseChanged(by seat: Int?)
 }
 
 /// The one owner of everything *contested* in Nertz: the foundations in
@@ -41,6 +46,13 @@ protocol TableAuthorityDelegate: AnyObject {
 @MainActor
 protocol TableAuthority: AnyObject {
     var delegate: TableAuthorityDelegate? { get set }
+
+    /// Now, in the table's clock — the one every seat's taps are
+    /// measured against. Solo and the host answer with their own clock
+    /// (they *are* the reference); a guest answers with its measured
+    /// offset from the host. Anything that stamps a moment goes through
+    /// here, so no caller has to know which device it's running on.
+    var tableNow: TimeInterval { get }
 
     // Shared table state — read-only outside the authority.
     var foundations: [FoundationPile] { get }
@@ -58,7 +70,13 @@ protocol TableAuthority: AnyObject {
     /// air, tallies, updates scores, records the result, and announces
     /// it via `roundEnded`. `caller` -1 = settled without a call (a
     /// player left); `note` explains it on the scoreboard.
-    func endRound(caller: Int, recordStats: Bool, note: String?)
+    ///
+    /// `calledAt` is when the caller's pile actually emptied, in the
+    /// host's clock — NERTS is a race too, and at a networked table the
+    /// host holds the settlement briefly and gives it to the earliest
+    /// call rather than the first one off the wire. nil means "not a
+    /// race, settle now" (a departure). Solo ignores it entirely.
+    func endRound(caller: Int, calledAt: TimeInterval?, recordStats: Bool, note: String?)
     /// The round stops mattering (quit to menu) — no settlement.
     func abandonRound()
     /// A seat's human is gone; from the next round the host's engine
@@ -67,16 +85,19 @@ protocol TableAuthority: AnyObject {
     func convertSeatToBot(seat: Int)
 
     // Foundation plays — the only ways a card reaches the middle.
-    /// Your own play. Solo/host: commits instantly. Networked guest:
-    /// becomes a short claim tossed at the host (the return value is
-    /// provisional). Returns the pile's id, or nil if the spot is
-    /// visibly illegal right now.
-    func playNow(_ card: Card, from source: MoveSource, at index: Int?, spot: CGPoint?) -> Int?
+    /// Your own play. Solo commits it instantly; a networked table (host
+    /// or guest alike) turns it into a claim from seat 0, because at a
+    /// real table your card has to win its race like anyone else's.
+    /// False = the spot is visibly illegal right now.
+    func playNow(_ card: Card, from source: MoveSource, at index: Int?, spot: CGPoint?) -> Bool
     /// An in-flight claim: the card is in the air now, but the pile
-    /// only mutates when it lands — first card DOWN wins, and losers
-    /// bounce home via `claimBounced`. `spot` is where a new pile was
+    /// only mutates when it lands, and among cards racing for one pile
+    /// the EARLIEST TAP wins — losers bounce home via `claimBounced`.
+    /// `tapAt` is when the player actually let go, in the host's clock;
+    /// `flight` is measured from that moment, not from arrival, so a
+    /// slow wire costs a player nothing. `spot` is where a new pile was
     /// aimed (nil = pick an open spot). False = illegal at throw time.
-    func submitClaim(_ card: Card, fromSeat: Int, source: MoveSource, pileIndex: Int?, spot: CGPoint?, flight: TimeInterval) -> Bool
+    func submitClaim(_ card: Card, fromSeat: Int, source: MoveSource, pileIndex: Int?, spot: CGPoint?, tapAt: TimeInterval, flight: TimeInterval) -> Bool
     /// One-level rollback of an instant commit, if the table hasn't
     /// moved on. Solo undo today; always false at a networked table.
     func undoFoundationPlay(pileID: Int, cardID: String, wasNewPile: Bool) -> Bool
@@ -86,6 +107,11 @@ protocol TableAuthority: AnyObject {
     /// run (4♥ then 5♥) chains without waiting for the wire — if the
     /// chain's base bounces, the host bounces the rest.
     func pileAccepts(_ card: Card, pileIndex: Int) -> Bool
+
+    /// Ask the table to freeze (or thaw). Solo answers itself; online
+    /// this asks the host, who declares it to everyone via
+    /// `tablePauseChanged` — nobody freezes unilaterally.
+    func requestPause(_ on: Bool, by seat: Int)
 
     // Private-board reporting — badges for boards nobody else can see.
     /// The engine reports simulated seats' nerts counts when they
@@ -167,12 +193,17 @@ final class LocalTableAuthority: TableAuthority {
 
     func convertSeatToBot(seat: Int) {}     // solo seats never leave
 
-    func endRound(caller: Int, recordStats: Bool, note: String?) {
+    /// `calledAt` is unused here: a solo table has no wire to correct
+    /// for, so the call settles the instant it's made — including the
+    /// tick's deliberate head start for you over the bots.
+    func endRound(caller: Int, calledAt: TimeInterval?, recordStats: Bool, note: String?) {
         guard roundActive else { return }
         roundActive = false
         // Cards still in the air when NERTS is called land if they legally
         // can; the rest go back to their owner's board (and count against it).
-        for claim in flying where !claim.bouncing {
+        // Oldest tap first here too, so the last scramble settles by the
+        // same rule as every other moment of the round.
+        for claim in flying.filter({ !$0.bouncing }).sorted(by: { $0.tapAt < $1.tapAt }) {
             if !commitClaim(claim) {
                 delegate?.claimBounced(claim)
             }
@@ -250,24 +281,34 @@ final class LocalTableAuthority: TableAuthority {
 
     // MARK: Foundation plays
 
-    func playNow(_ card: Card, from source: MoveSource, at index: Int?, spot: CGPoint?) -> Int? {
-        guard roundActive else { return nil }
-        return landOnFoundation(card, at: index, spot: spot)
+    var tableNow: TimeInterval { Date().timeIntervalSince1970 }
+
+    func playNow(_ card: Card, from source: MoveSource, at index: Int?, spot: CGPoint?) -> Bool {
+        guard roundActive else { return false }
+        return landOnFoundation(card, at: index, spot: spot) != nil
     }
 
-    func submitClaim(_ card: Card, fromSeat: Int, source: MoveSource, pileIndex: Int?, spot: CGPoint?, flight: TimeInterval) -> Bool {
+    func submitClaim(_ card: Card, fromSeat: Int, source: MoveSource, pileIndex: Int?, spot: CGPoint?, tapAt: TimeInterval, flight: TimeInterval) -> Bool {
         guard roundActive else { return false }
         if let pileIndex {
-            guard pileIndex < foundations.count, foundations[pileIndex].accepts(card) else { return false }
+            guard pileAccepts(card, pileIndex: pileIndex, seat: fromSeat) else { return false }
         } else {
             guard card.rank == 1, foundations.count < maxFoundations else { return false }
         }
+        // The flight runs from the TAP, not from now — a card that
+        // spent 200ms on the wire has already served most of it, so
+        // latency buys nobody an advantage and costs nobody one.
         flying.append(FlyingCard(
             card: card, fromSeat: fromSeat, source: source,
             pileID: pileIndex.map { foundations[$0].id },
             spot: pileIndex == nil ? (spot ?? openSpot()) : nil,
-            resolveAt: Date().addingTimeInterval(flight)
+            tapAt: tapAt,
+            resolveAt: Date(timeIntervalSince1970: tapAt + flight)
         ))
+        // `landed` only decides whether a card is drawn at its owner's
+        // table edge, and seat 0 has no edge — your own cards slide
+        // from your hand. Nothing to animate into, so nothing to set.
+        guard fromSeat != 0 else { return true }
         Task {
             try? await Task.sleep(for: .milliseconds(30))
             if let i = self.flying.firstIndex(where: { $0.id == card.id }) {
@@ -278,7 +319,22 @@ final class LocalTableAuthority: TableAuthority {
     }
 
     func pileAccepts(_ card: Card, pileIndex: Int) -> Bool {
-        pileIndex < foundations.count && foundations[pileIndex].accepts(card)
+        pileAccepts(card, pileIndex: pileIndex, seat: 0)
+    }
+
+    /// Pending-aware pile check, from one seat's point of view. Solo has
+    /// no seat-0 flights at all, so this reads as the plain `accepts` it
+    /// always was; if a chain's base loses its race, `landOnFoundation`
+    /// bounces the rest of it.
+    private func pileAccepts(_ card: Card, pileIndex: Int, seat: Int) -> Bool {
+        guard pileIndex < foundations.count else { return false }
+        return foundations[pileIndex].accepts(card, projecting: flying, seat: seat)
+    }
+
+    // MARK: Pause (solo answers itself; the networked tables override)
+
+    func requestPause(_ on: Bool, by seat: Int) {
+        delegate?.tablePauseChanged(by: on ? seat : nil)
     }
 
     func undoFoundationPlay(pileID: Int, cardID: String, wasNewPile: Bool) -> Bool {
@@ -304,12 +360,41 @@ final class LocalTableAuthority: TableAuthority {
 
     // MARK: Pacing
 
-    /// Settle any claims whose flight time is up.
+    /// Settle any claims whose flight time is up — earliest tap first,
+    /// and never ahead of an earlier tap still racing for the same
+    /// spot. That second rule is what makes a slow connection safe: a
+    /// card thrown first but delivered late still gets the pile, and
+    /// the fast player's card waits its turn and then bounces.
+    /// (One loop rather than one pass: landing a card can free the
+    /// next one in a chain to settle in the same tick.)
     func settleDueClaims(now: Date) {
-        let due = flying.filter { !$0.bouncing && now >= $0.resolveAt }.map(\.id)
-        for id in due {
-            resolveClaim(cardID: id)
+        // The overwhelmingly common case is an empty sky; don't build
+        // a single array to discover that.
+        guard flying.contains(where: { !$0.bouncing && now >= $0.resolveAt }) else { return }
+        while let next = nextToSettle(now: now) {
+            resolveClaim(cardID: next)
         }
+    }
+
+    /// The oldest tap that is both due and unblocked, or nil when the
+    /// table has to keep waiting. Blocked means an earlier tap is still
+    /// racing for the same pile — that card may be a slower player's,
+    /// and first tap wins. Terminates: every claim has a finite
+    /// `resolveAt`, so a blocker always becomes due itself. (Two claims
+    /// contend only over an existing pile; fresh aces each get their
+    /// own patch of felt, so they never race.)
+    private func nextToSettle(now: Date) -> String? {
+        var best: FlyingCard?
+        for claim in flying where !claim.bouncing && now >= claim.resolveAt {
+            guard claim.tapAt < (best?.tapAt ?? .infinity) else { continue }
+            let blocked = flying.contains {
+                !$0.bouncing && now < $0.resolveAt
+                    && $0.tapAt < claim.tapAt
+                    && $0.pileID != nil && $0.pileID == claim.pileID
+            }
+            if !blocked { best = claim }
+        }
+        return best?.id
     }
 
     /// Whole table stuck for a long while — everyone shuffles (house rule).
@@ -338,6 +423,13 @@ final class LocalTableAuthority: TableAuthority {
         let claim = flying[idx]
         if commitClaim(claim) {
             flying.remove(at: idx)
+        } else if claim.fromSeat == 0 {
+            // Your own card lost — straight home. It has to leave the
+            // sky in the same breath, because `claimBounced` puts it
+            // back on your board and yours is the one board on screen:
+            // a lingering ghost would draw the same card twice.
+            flying.remove(at: idx)
+            delegate?.claimBounced(claim)
         } else {
             // Beaten to the spot — the card flies home and rejoins the board.
             delegate?.claimBounced(claim)

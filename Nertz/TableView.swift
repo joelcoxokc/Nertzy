@@ -42,6 +42,7 @@ struct TableView: View {
         }
         .background(FeltBackground())
         .overlay { roundEndOverlay }
+        .leaveTableConfirmation(engine: engine, isPresented: $confirmLeave)
         .onAppear {
             Haptics.prepare()
             Sound.start()
@@ -196,7 +197,10 @@ struct TableView: View {
                 destPos = layout.scatterPoint(f.spot ?? CGPoint(x: 0.5, y: 0.5))
                 destRot = tossAngle(for: f.card)
             }
-            let atSeat = !f.landed || f.bouncing
+            // Cards launch from their owner's edge badge — except your
+            // own, which have no edge to come from. Yours slide out of
+            // your hand and go straight for the pile.
+            let atSeat = f.fromSeat != 0 && (!f.landed || f.bouncing)
             out.append(RC(
                 id: f.id, card: f.card,
                 pos: atSeat ? layout.seatLaunchPos(f.fromSeat) : destPos,
@@ -462,34 +466,24 @@ struct TableView: View {
             .position(x: 58, y: layout.statusY)
             .zIndex(9300)
 
-        // Pause, next to undo under the waste (online: nobody can freeze a
-        // live table — the button offers to leave instead)
-        Button {
-            if engine.isOnline {
+        // Pause, next to undo under the waste. Online it freezes the
+        // whole table — anyone at it may call one.
+        HUDCircleButton(icon: "pause.fill") { engine.requestPause(true) }
+            .position(layout.pausePos)
+            .zIndex(9300)
+
+        // Leave — banished to the top-right corner, far from the thumbs
+        // that are busy throwing cards. Always confirms.
+        if engine.isOnline {
+            HUDCircleButton(
+                icon: "rectangle.portrait.and.arrow.right",
+                size: 36, iconSize: 13, opacity: 0.7
+            ) {
+                Haptics.flip()
                 confirmLeave = true
-            } else {
-                engine.setPaused(true)
             }
-        } label: {
-            Image(systemName: engine.isOnline ? "rectangle.portrait.and.arrow.right" : "pause.fill")
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(.white.opacity(0.85))
-                .frame(width: 40, height: 40)
-                .background(Circle().fill(Color.black.opacity(0.28)))
-                .overlay(Circle().strokeBorder(.white.opacity(0.12), lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .position(layout.pausePos)
-        .zIndex(9300)
-        .confirmationDialog(
-            "Leave the table?",
-            isPresented: $confirmLeave,
-            titleVisibility: .visible
-        ) {
-            Button("Leave Match", role: .destructive) {
-                engine.leaveOnlineMatch()
-            }
-            Button("Keep Playing", role: .cancel) {}
+            .position(layout.leavePos)
+            .zIndex(9300)
         }
 
         // Stock count
@@ -514,17 +508,12 @@ struct TableView: View {
         }
 
         // Undo — one move, below the waste
-        Button {
+        HUDCircleButton(
+            icon: "arrow.uturn.backward",
+            iconSize: 17, opacity: 0.9
+        ) {
             engine.undoLast()
-        } label: {
-            Image(systemName: "arrow.uturn.backward")
-                .font(.system(size: 17, weight: .bold))
-                .foregroundStyle(.white.opacity(0.9))
-                .frame(width: 40, height: 40)
-                .background(Circle().fill(Color.black.opacity(0.30)))
-                .overlay(Circle().strokeBorder(.white.opacity(0.15), lineWidth: 1))
         }
-        .buttonStyle(.plain)
         .disabled(!engine.canUndo)
         .opacity(engine.canUndo ? 1 : 0.35)
         .animation(.easeInOut(duration: 0.2), value: engine.canUndo)

@@ -109,6 +109,12 @@ struct TableLayout {
     var undoPos: CGPoint { handed(CGPoint(x: rawWastePos(depth: 1).x, y: buttonRowY)) }
     var pausePos: CGPoint { handed(CGPoint(x: rightColX, y: buttonRowY)) }
 
+    /// Leaving the match lives in the far top-right corner, deliberately
+    /// out of thumb reach — it ends your match, and if you have the deal
+    /// it ends the table for everyone. Never mirrored by left-hand mode:
+    /// the point is that no hand rests near it.
+    var leavePos: CGPoint { CGPoint(x: size.width - 28, y: 30) }
+
     // MARK: Seats — bare nerts-count badges pinned to the table edges
 
     func seatPos(_ seat: Int) -> CGPoint {

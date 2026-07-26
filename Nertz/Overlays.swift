@@ -1,10 +1,87 @@
 import SwiftUI
 
+// MARK: - Leaving the table
+
+/// Every way out of an online match asks first, in one voice — the
+/// corner button, the scoreboard's QUIT, a guest's LEAVE TABLE. What
+/// it costs depends on who you are: a guest gives up a seat, the host
+/// takes the whole table down.
+private struct LeaveTableConfirmation: ViewModifier {
+    let engine: GameEngine
+    @Binding var isPresented: Bool
+
+    private var isHost: Bool { engine.isOnlineHost }
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog(
+            isHost ? "Close the table?" : "Leave the table?",
+            isPresented: $isPresented,
+            titleVisibility: .visible
+        ) {
+            Button(isHost ? "Close the Table" : "Leave Match", role: .destructive) {
+                engine.leaveOnlineMatch()
+            }
+            Button("Keep Playing", role: .cancel) {}
+        } message: {
+            Text(isHost
+                ? "You have the deal — leaving ends the match for everyone at the table."
+                : "The round settles up without you and a bot takes your seat.")
+        }
+    }
+}
+
+extension View {
+    func leaveTableConfirmation(engine: GameEngine, isPresented: Binding<Bool>) -> some View {
+        modifier(LeaveTableConfirmation(engine: engine, isPresented: isPresented))
+    }
+}
+
+/// The way out, wherever it's offered. Solo it's QUIT and the match
+/// keeps on CONTINUE, so it goes straight through; online it's a
+/// LEAVE TABLE that always asks first. Owning the confirmation here
+/// means no caller can add the button and forget the question.
+struct LeaveOrQuitButton: View {
+    let engine: GameEngine
+
+    @State private var confirmLeave = false
+
+    var body: some View {
+        Button {
+            if engine.isOnline {
+                confirmLeave = true
+            } else {
+                engine.quitToMenu()
+            }
+        } label: {
+            smallPill(engine.isOnline ? "LEAVE TABLE" : "QUIT")
+        }
+        .buttonStyle(.plain)
+        .leaveTableConfirmation(engine: engine, isPresented: $confirmLeave)
+    }
+}
+
 struct PauseOverlay: View {
     let engine: GameEngine
 
     @AppStorage(TablePrefs.leftHandKey) private var leftHandMode = false
     @AppStorage(TablePrefs.tapToPlayKey) private var tapToPlay = true
+    /// The host's override appears a few seconds in — long enough that
+    /// it never looks like the way to snatch the table back, short
+    /// enough to rescue one whose pauser has vanished.
+    @State private var overrideOffered = false
+
+    /// Who else froze the table, if it wasn't me. Solo, and a pause I
+    /// called myself, both read as nil — this overlay only ever renders
+    /// while something holds the pause, so nil means "mine".
+    private var pauser: String? {
+        guard engine.isOnline, let by = engine.pausedBy, by != 0 else { return nil }
+        return engine.seatName(by)
+    }
+    /// The engine states the rule; the view only adds the delay before
+    /// the host's override shows up.
+    private var canResume: Bool {
+        engine.canResume && (pauser == nil || overrideOffered)
+    }
 
     var body: some View {
         ZStack {
@@ -18,52 +95,71 @@ struct PauseOverlay: View {
                     .font(.system(size: 32, weight: .black, design: .rounded))
                     .tracking(3)
                     .foregroundStyle(.white)
-                    .padding(.bottom, 6)
+                if engine.isOnline {
+                    Text(pauser.map { "\($0) paused the table" } ?? "Everyone's table is frozen")
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.65))
+                }
+                Spacer().frame(height: 6)
 
-                Button {
-                    engine.setPaused(false)
-                } label: {
-                    Text("RESUME")
-                        .font(.system(size: 18, weight: .black, design: .rounded))
-                        .tracking(1.5)
-                        .foregroundStyle(.white)
+                if canResume {
+                    Button {
+                        engine.requestPause(false)
+                    } label: {
+                        Text(pauser == nil ? "RESUME" : "RESUME FOR EVERYONE")
+                            .font(.system(size: 18, weight: .black, design: .rounded))
+                            .tracking(1.5)
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(
+                                Capsule().fill(LinearGradient(
+                                    colors: [Color(hex: 0x35C963), Color(hex: 0x1E9B47)],
+                                    startPoint: .top, endPoint: .bottom
+                                ))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                } else if let pauser {
+                    Text("Only \(pauser) can resume.")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.55))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 14)
-                        .background(
-                            Capsule().fill(LinearGradient(
-                                colors: [Color(hex: 0x35C963), Color(hex: 0x1E9B47)],
-                                startPoint: .top, endPoint: .bottom
-                            ))
-                        )
+                        .background(Capsule().fill(.white.opacity(0.07)))
                 }
-                .buttonStyle(.plain)
 
-                Button {
-                    engine.tableShuffle()
-                    engine.setPaused(false)
-                } label: {
-                    VStack(spacing: 3) {
-                        Text("TABLE SHUFFLE  🔀")
-                            .font(.system(size: 15, weight: .heavy, design: .rounded))
-                            .tracking(1)
-                            .foregroundStyle(.white)
-                        Text("Stuck? Everyone re-forms their stock and moves\nthe top card to the bottom.")
-                            .font(.system(size: 11, weight: .medium, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.6))
-                            .multilineTextAlignment(.center)
+                // A table shuffle is a house rule for the whole table,
+                // and only the host can call one on the wire — so
+                // online it stays with the stuck-table detector.
+                if !engine.isOnline {
+                    Button {
+                        engine.tableShuffle()
+                        engine.requestPause(false)
+                    } label: {
+                        VStack(spacing: 3) {
+                            Text("TABLE SHUFFLE  🔀")
+                                .font(.system(size: 15, weight: .heavy, design: .rounded))
+                                .tracking(1)
+                                .foregroundStyle(.white)
+                            Text("Stuck? Everyone re-forms their stock and moves\nthe top card to the bottom.")
+                                .font(.system(size: 11, weight: .medium, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.6))
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 11)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(.white.opacity(0.10))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .strokeBorder(.white.opacity(0.15), lineWidth: 1)
+                        )
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 11)
-                    .background(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .fill(.white.opacity(0.10))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .strokeBorder(.white.opacity(0.15), lineWidth: 1)
-                    )
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
 
                 SettingToggleRow(
                     title: "LEFT-HAND MODE",
@@ -77,20 +173,24 @@ struct PauseOverlay: View {
                 )
 
                 HStack(spacing: 10) {
-                    Button {
-                        engine.newMatch()
-                    } label: {
-                        smallPill("NEW MATCH")
+                    // Redealing mid-match is the host's call alone, and
+                    // there's no message for it — solo only.
+                    if !engine.isOnline {
+                        Button {
+                            engine.newMatch()
+                        } label: {
+                            smallPill("NEW MATCH")
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
-                    Button {
-                        engine.quitToMenu()
-                    } label: {
-                        smallPill("QUIT")
-                    }
-                    .buttonStyle(.plain)
+                    LeaveOrQuitButton(engine: engine)
                 }
                 .padding(.top, 4)
+            }
+            .task(id: engine.pausedBy) {
+                overrideOffered = false
+                try? await Task.sleep(for: .seconds(5))
+                overrideOffered = true
             }
             .padding(26)
             .frame(maxWidth: 340)
@@ -104,17 +204,6 @@ struct PauseOverlay: View {
             )
             .padding(.horizontal, 30)
         }
-    }
-
-    private func smallPill(_ title: String) -> some View {
-        Text(title)
-            .font(.system(size: 13, weight: .heavy, design: .rounded))
-            .tracking(1)
-            .foregroundStyle(.white.opacity(0.8))
-            .padding(.horizontal, 18)
-            .padding(.vertical, 9)
-            .background(Capsule().fill(.white.opacity(0.08)))
-            .overlay(Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 1))
     }
 }
 
@@ -179,12 +268,7 @@ struct ScoreboardOverlay: View {
                                 .shadow(color: .black.opacity(0.3), radius: 8, y: 4)
                         }
                         .buttonStyle(.plain)
-                        Button {
-                            engine.quitToMenu()
-                        } label: {
-                            smallPill("QUIT")
-                        }
-                        .buttonStyle(.plain)
+                        LeaveOrQuitButton(engine: engine)
                     }
                 } else {
                     // Guests wait for the host to deal the next one.
@@ -194,12 +278,7 @@ struct ScoreboardOverlay: View {
                             : "Waiting for the host to deal…")
                             .font(.system(size: 14, weight: .semibold, design: .rounded))
                             .foregroundStyle(.white.opacity(0.6))
-                        Button {
-                            engine.leaveOnlineMatch()
-                        } label: {
-                            smallPill("LEAVE TABLE")
-                        }
-                        .buttonStyle(.plain)
+                        LeaveOrQuitButton(engine: engine)
                     }
                 }
             }
@@ -218,17 +297,6 @@ struct ScoreboardOverlay: View {
                 ConfettiView(particleCount: 90).ignoresSafeArea()
             }
         }
-    }
-
-    private func smallPill(_ title: String) -> some View {
-        Text(title)
-            .font(.system(size: 13, weight: .heavy, design: .rounded))
-            .tracking(1)
-            .foregroundStyle(.white.opacity(0.8))
-            .padding(.horizontal, 18)
-            .padding(.vertical, 9)
-            .background(Capsule().fill(.white.opacity(0.08)))
-            .overlay(Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 1))
     }
 
     private func playerRow(_ p: Int) -> some View {

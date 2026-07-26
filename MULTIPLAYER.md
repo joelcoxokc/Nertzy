@@ -134,6 +134,130 @@ freshly tossed ACE can't be chained onto until it commits (~RTT) —
 fixing needs client-proposed pile ids + host-side deferred claims;
 do it if it stumbles in play.
 
+*3c built 2026-07-26 — first tap wins, table pause, leave button.
+Pending device test.*
+
+**Arbitration is now by tap time, not arrival time.** The old rule
+gave the host every contested pile (it committed instantly via
+`playNow` while a guest's claim cost `latency + 0.3s`), and between
+guests the faster connection won regardless of who moved first.
+Three pieces, all inside the existing seam:
+
+1. *A shared clock.* `TableClock` (Multiplayer.swift) estimates this
+   device's offset from the host's clock off ping/pong — `ping`/`pong`
+   now carry `t0`/`t1`, a 2s heartbeat runs for the whole match, and
+   the best-of-8-by-lowest-RTT sample wins (a fast round trip is the
+   least distorted one). `clock.synced` gates stamping: an unsynced
+   stamp is worse than none, so until the first pong lands claims go
+   out bare and the host times them on arrival. `hostID` is now bound
+   from `tableConfig`'s seating (it drives which peer's pongs are the
+   clock) and frozen once `inGame`.
+2. *Every play is a claim.* `HostTableAuthority.playNow` no longer
+   commits instantly — it enters `inner.submitClaim` like a bot or a
+   guest, so the host carries the same small bounce risk it imposes.
+   `FlyingCard.tapAt` (host-clock seconds) rides along, and
+   `submitClaim` computes `resolveAt = tapAt + flight` — the flight
+   runs from the TAP, so wire time is served, not added. `playNow`
+   returns `Bool` now: at a networked table it commits nothing, so a
+   pile id would have been a fiction. The host's hold window is
+   `MatchSession.tableHold`: worst one-way × 1.5 + 40ms, clamped
+   120–350ms. Cards launch from their owner's edge badge, and seat 0
+   has no edge — `TableView` reads `f.fromSeat != 0 && (!f.landed ||
+   f.bouncing)`, so your own cards slide out of your hand. (Keep that
+   in the view: making the authority lie about `landed` instead put a
+   rendering special case in the rules layer.) A seat-0 claim that
+   loses leaves `flying` in the same breath it comes home — your board
+   is the one on screen, so a lingering bouncing ghost would draw the
+   same card twice.
+3. *Ordering.* `LocalTableAuthority.settleDueClaims` resolves due
+   claims oldest-tap-first, and blocks any claim while an earlier tap
+   is still racing for the same pile — that second rule is what makes
+   a slow connection safe. It loops rather than single-passes so a
+   landed card frees its chain in the same tick. `endRound` settles
+   the last scramble by the same order.
+
+Bots are unchanged by design: they still throw with a 0.68s flight
+and still can't see a pile fresher than `params.reaction`, so a human
+tapping mid-flight has the earlier stamp and takes the pile. Solo is
+untouched — `LocalTableAuthority.playNow` still commits instantly and
+solo has no seat-0 flights at all.
+
+Fixed on the way through: `pileAccepts` is now seat-scoped and used
+by `submitClaim`, so a guest's chained run (4♥ then 5♥ inside one
+hold window) validates at the host instead of being rejected because
+the base hadn't committed — 3b's documented chaining wasn't actually
+implemented host-side. Only the *thrower's* own flights count, so
+nobody builds on a card they couldn't have seen.
+
+**Pause is table-wide.** Anyone may call one; only the host declares
+it. `pauseRequest(seat:on:)` → host → `pauseState(by:)` → everyone,
+through `TableAuthority.requestPause` / `TableAuthorityDelegate.
+tablePauseChanged`. `GameEngine.paused` is now computed from
+`pausedBy` so every existing read still works. The host **holds**
+gameplay messages while frozen (capped at 256) rather than dropping
+them — a player who hadn't heard about the pause yet still threw
+cards, and those resolve honestly on resume (their `tapAt` is older
+than everything post-resume, so they land first, correctly). Resume
+policy: the pauser, or the host after 5s as an override, plus a 120s
+auto-resume backstop so a vanished pauser can't strand the table.
+`roundLive` guards against a pause request arriving after the round
+already settled here (it would otherwise start queueing against a
+dead round). Backgrounding still does NOT pause an online table —
+leaving your seat isn't grounds for freezing everyone else, and a
+one-sided freeze would drift this device's deadlines off the host's.
+
+**Leaving** moved to the top-right corner (`TableLayout.leavePos`,
+deliberately *not* mirrored by left-hand mode — the point is that no
+thumb rests there), and every online exit now confirms through one
+`leaveTableConfirmation` modifier whose copy changes by role. The
+scoreboard's QUIT and a guest's LEAVE TABLE previously dropped the
+table with no warning at all. Solo quit stays confirmation-free (it
+keeps the match on CONTINUE).
+
+**NERTS calls are arbitrated the same way.** It was the last place
+arrival order still decided anything — the host's call settled
+instantly while a guest's cost a one-way trip. `nertsCalled` now
+carries `tapAt`, `TableAuthority.endRound` takes `calledAt:`, and a
+call opens the same window a contested pile gets: every call arriving
+inside it competes and the earliest emptied pile takes the round.
+The window runs from the *first* call's own stamp, which is always at
+least as long as correctness needs (a call tapped at X arrives by
+X + hold, so once host time passes winner.tapAt + hold no earlier
+call can still be in flight, and firstTapAt ≥ winnerTapAt). Claims
+arriving during the window still enter the pipeline and are settled
+by `endRound`'s final sweep — cards in the air when NERTS is called
+land if they legally can, exactly as before. `calledAt: nil` means
+"not a race, settle now" (a departure); a call already in hand
+outranks a departure, since somebody genuinely went out.
+
+**Solo is provably unaffected by all of the above**, which is the
+point of putting it behind the seam rather than forking the rules:
+- Human plays still go `playNow` → `landOnFoundation`, instant. No
+  seat-0 claim ever exists in solo, so there is nothing to order.
+- Every bot claim uses the same 0.68s flight, so `resolveAt` order ==
+  `tapAt` order == insertion order — the new sort reproduces the old
+  array order exactly, and the "wait for an earlier tap" block can
+  never fire (an earlier tap is always due first at equal flights).
+- The seat-scoped `pileAccepts` widening is unreachable for bots:
+  `AIBrain.decide` only ever reads committed foundations, so it
+  cannot propose a card that chains onto its own in-flight one.
+- `LocalTableAuthority.endRound` ignores `calledAt` entirely, so
+  solo NERTS keeps the tick's deliberate head start for the human
+  (the human check runs before the bot loop and returns).
+
+Dev flags: `-mockonline` plays a real online table with nobody on the
+other end — a genuine `HostTableAuthority` with a no-op wire, so the
+hold window, tap ordering, pause broadcast and "too late to undo" are
+the same code the device runs. (It deliberately does NOT just wear the
+chrome over a solo table; that made the simulator disagree with the
+device in exactly the places that are expensive to test.) `-mockpaused`
+pauses 3s in, since simctl can't tap.
+
+Everything that stamps a moment goes through `TableAuthority.tableNow`
+— solo and the host answer with their own clock because they *are* the
+reference, a guest answers with its measured offset. No caller has to
+know which device it's on.
+
 ## Stats integration (already built for this)
 
 `StatsStore.record(summary, settings:, match:)` is the one door; a multiplayer

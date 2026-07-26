@@ -79,9 +79,42 @@ struct FoundationPile: Identifiable, Codable {
     var top: Card? { cards.last }
     var isComplete: Bool { cards.count >= Self.completeCount }
 
+    /// The whole foundation rule, in one place: same suit, next rank up.
+    static func follows(_ card: Card, _ top: Card) -> Bool {
+        card.suit == top.suit && card.rank == top.rank + 1
+    }
+
     func accepts(_ card: Card) -> Bool {
         guard !isComplete, let top else { return false }
-        return card.suit == top.suit && card.rank == top.rank + 1
+        return Self.follows(card, top)
+    }
+
+    /// Would this card land here if `seat`'s cards still in the air
+    /// counted as already down? That's how a run (4♥ then 5♥) chains at
+    /// a networked table without waiting on the wire — and only that
+    /// seat's flights count, since nobody can build on a card they
+    /// couldn't have seen. `skipping` drops flights already known to
+    /// have lost their race. One pass, no allocation: the newest tap is
+    /// the top of the projected pile.
+    func accepts(
+        _ card: Card,
+        projecting flying: [FlyingCard],
+        seat: Int,
+        skipping skip: (FlyingCard) -> Bool = { _ in false }
+    ) -> Bool {
+        var top = cards.last
+        var newest = -Double.infinity
+        var count = cards.count
+        for f in flying
+        where f.fromSeat == seat && !f.bouncing && f.pileID == id && !skip(f) {
+            count += 1
+            if f.tapAt > newest {
+                newest = f.tapAt
+                top = f.card
+            }
+        }
+        guard count < Self.completeCount, let top else { return false }
+        return Self.follows(card, top)
     }
 }
 
@@ -221,6 +254,12 @@ struct FlyingCard: Identifiable {
     let source: MoveSource          // where it came from, for bounce-backs
     let pileID: Int?                // nil = starting a new pile
     let spot: CGPoint?              // where a new pile will land; nil for existing piles
+    /// When the player actually tapped or dropped this card, in the
+    /// host's clock. THE tie-breaker: two cards racing for one pile are
+    /// settled oldest tap first, so a slow connection never loses a
+    /// spot the player reached first. Ordering only — pausing shifts
+    /// `resolveAt` and leaves this alone.
+    var tapAt: TimeInterval
     var resolveAt: Date             // when the race is decided; pause-shifted
     var landed = false              // your own online throws are born landed:
                                     // the card slides hand → pile directly

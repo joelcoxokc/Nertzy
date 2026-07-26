@@ -11,8 +11,12 @@ import Observation
 /// 0 = me.
 enum NetMessage: Codable {
     case hello(name: String)
-    case ping(id: UUID)
-    case pong(id: UUID)
+    /// Ping/pong doubles as clock sync: `t0` is the sender's clock at
+    /// send, `t1` the responder's clock at receipt. With those and the
+    /// arrival time, a guest can express any moment in the host's
+    /// clock — which is what makes "first tap wins" measurable.
+    case ping(id: UUID, t0: Double)
+    case pong(id: UUID, t0: Double, t1: Double)
     /// Whoever created the table (cut the code, sent the invite) gets
     /// the deal. Ties (pure auto-match, both initiated) break to the
     /// lowest claiming id — same rule on every device.
@@ -26,8 +30,15 @@ enum NetMessage: Codable {
     case playerClaim(WireClaim)                 // player → host
     case claimResolved(WireResolution)          // host → all
     case nertsCount(seat: Int, count: Int)      // player → all (badges)
-    case nertsCalled(seat: Int)                 // player → host
+    /// player → host. `tapAt` (host clock) is when their pile emptied —
+    /// NERTS is arbitrated by earliest call, not first arrival. Optional
+    /// so an unsynced clock (or an older build) still calls the round;
+    /// the host then times it on arrival, as it used to.
+    case nertsCalled(seat: Int, tapAt: Double?)
     case seatConverted(seat: Int)               // host → all: a bot took the chair
+    // Pause — anyone may ask, only the host declares.
+    case pauseRequest(seat: Int, on: Bool)      // player → host
+    case pauseState(by: Int?)                   // host → all; nil = playing
 
     func encoded() -> Data? { try? JSONEncoder().encode(self) }
     static func decode(_ data: Data) -> NetMessage? {
@@ -64,6 +75,54 @@ struct WireClaim: Codable {
     var source: MoveSource
     var pileID: Int?            // host's pile id; nil = new pile (ace)
     var spot: CGPoint?          // where the new pile was tossed, normalized
+    /// When the player let go, expressed in the HOST's clock. The host
+    /// arbitrates on this, not on arrival order. Optional so a claim
+    /// from a build that predates tap stamping still decodes (the host
+    /// falls back to treating it as tapped on arrival).
+    var tapAt: Double?
+}
+
+// MARK: - A clock everyone can agree on
+
+/// The table's shared clock. Every device measures its offset from the
+/// host's clock off ping/pong, so "when did you tap?" means the same
+/// thing everywhere. The host's own offset is always zero.
+///
+/// Accuracy is what matters, not precision: we keep a short window of
+/// samples and trust the one with the *lowest* round trip, because a
+/// fast round trip is the one least distorted by queueing. Absolute
+/// wall-clock disagreement between devices is irrelevant — it cancels.
+@MainActor
+final class TableClock {
+    private var samples: [(rtt: TimeInterval, offset: TimeInterval)] = []
+
+    /// The sample least distorted by queueing. Recomputed on read — the
+    /// window is eight entries, so this is cheaper than keeping two
+    /// stored copies honest.
+    private var best: (rtt: TimeInterval, offset: TimeInterval)? {
+        samples.min { $0.rtt < $1.rtt }
+    }
+
+    /// hostClock ≈ myClock + offset.
+    var offset: TimeInterval { best?.offset ?? 0 }
+    /// Round trip to the host, when we've measured one.
+    var rtt: TimeInterval? { best?.rtt }
+    /// False until a round trip has actually landed. An unsynced stamp
+    /// is worse than none — two devices' wall clocks can disagree by
+    /// seconds, which would hand someone every pile or none. Until this
+    /// flips, plays go out unstamped and the host times them on arrival.
+    var synced: Bool { !samples.isEmpty }
+
+    /// Now, in the host's clock.
+    func now() -> TimeInterval { Date().timeIntervalSince1970 + offset }
+
+    /// One completed round trip: `t0` my send, `t1` their receipt,
+    /// `t3` my receipt — all in each device's own clock.
+    func sample(t0: TimeInterval, t1: TimeInterval, t3: TimeInterval) {
+        // Their clock at t1 vs. the midpoint of my send and receive.
+        samples.append((max(0, t3 - t0), t1 - (t0 + t3) / 2))
+        if samples.count > 8 { samples.removeFirst() }
+    }
 }
 
 /// The host's verdict on any foundation play — the one message that
@@ -119,6 +178,23 @@ final class MatchSession {
     @ObservationIgnored private var bridge: MatchBridge?
     @ObservationIgnored private var logCounter = 0
     @ObservationIgnored private var pendingPings: [UUID: Date] = [:]
+    /// Last measured round trip per player — the host sizes its
+    /// arbitration hold window off the worst one at the table.
+    @ObservationIgnored private var rttByPlayer: [String: TimeInterval] = [:]
+    @ObservationIgnored private var heartbeat: Task<Void, Never>?
+
+    /// This device's read on the host's clock (identity on the host).
+    @ObservationIgnored let clock = TableClock()
+
+    /// How long the host holds a contested landing before deciding, so
+    /// a card tapped first but delivered late still wins its pile.
+    /// Scaled to the worst connection at the table and capped hard —
+    /// past a third of a second the wait reads as lag, and at that
+    /// point a fair table beats a snappy one only so far.
+    var tableHold: TimeInterval {
+        let worstOneWay = (rttByPlayer.values.max() ?? 0) / 2
+        return min(max(worstOneWay * 1.5 + 0.04, 0.12), 0.35)
+    }
 
     // Phase 2: the live game riding this match.
     /// Set on guests when the host announces seating — the menu uses it
@@ -151,6 +227,10 @@ final class MatchSession {
     }
 
     private func registerHostClaim(_ id: String) {
+        // Once the table is dealt the seating has settled it; a late
+        // claim must not move the deal (or the clock's reference peer)
+        // out from under a game in progress.
+        guard !inGame else { return }
         if let current = hostID {
             hostID = min(current, id)
         } else {
@@ -182,13 +262,37 @@ final class MatchSession {
     // MARK: Actions
 
     func ping() {
+        let now = Date()
+        // Every peer answers the same ping, so a record has to outlive
+        // the first reply — otherwise only the quickest peer is ever
+        // measured and the hold window never sees the slowest one.
+        // Sweep instead: unanswered pings age out, so this stays small.
+        pendingPings = pendingPings.filter { now.timeIntervalSince($0.value) < 10 }
         let id = UUID()
-        pendingPings[id] = Date()
-        send(.ping(id: id))
-        addLog("🏓 ping sent")
+        pendingPings[id] = now
+        send(.ping(id: id, t0: now.timeIntervalSince1970))
+        if !inGame { addLog("🏓 ping sent") }
+    }
+
+    /// A quiet ping every couple of seconds for the whole match: it
+    /// keeps each guest's clock offset honest as the network drifts,
+    /// and keeps the host's hold window sized to the real connection.
+    private func startHeartbeat() {
+        heartbeat?.cancel()
+        heartbeat = Task { [weak self] in
+            // Ends itself if the session is gone, so a torn-down match
+            // can never leave a timer waking the main actor forever.
+            while !Task.isCancelled {
+                guard let self else { break }
+                self.ping()
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
     }
 
     func leave() {
+        heartbeat?.cancel()
+        heartbeat = nil
         guard !ended else { return }
         match.delegate = nil
         match.disconnect()
@@ -202,6 +306,19 @@ final class MatchSession {
         } catch {
             addLog("⚠️ send failed: \(error.localizedDescription)")
         }
+    }
+
+    /// Answer one peer rather than shouting at the table. Pongs are the
+    /// only traffic that has exactly one interested recipient, and at a
+    /// four-player table broadcasting them would put twelve times more
+    /// heartbeat messages on the wire than anyone reads.
+    private func send(_ message: NetMessage, to playerID: String) {
+        guard let data = message.encoded() else { return }
+        guard let player = match.players.first(where: { $0.gamePlayerID == playerID }) else {
+            send(message)       // unknown peer — the broadcast still reaches them
+            return
+        }
+        try? match.send(data, to: [player], dataMode: .reliable)
     }
 
     // MARK: Starting the game (Phase 2)
@@ -239,6 +356,11 @@ final class MatchSession {
             return
         }
         let host = myGlobal == 0        // seat 0 (lowest id) hosts
+        // The announced seating is the last word on who has the deal —
+        // bind it here rather than trusting a claimHost message that may
+        // never have arrived, because clock sync keys off knowing which
+        // peer's pongs carry the table's clock.
+        hostID = humans.first?.id
         let map = SeatMap(total: total, myGlobal: myGlobal)
         let difficulty = Difficulty(rawValue: config.difficultyRaw) ?? .classic
         let settings = GameSettings(
@@ -275,6 +397,7 @@ final class MatchSession {
         if host {
             let h = HostTableAuthority(
                 map: map, seatRecords: records, settings: settings,
+                hold: { [weak self] in self?.tableHold ?? 0.2 },
                 send: { [weak self] in self?.send($0) }
             )
             gameplaySink = { [weak h] in h?.receive($0) }
@@ -282,6 +405,7 @@ final class MatchSession {
         } else {
             let g = GuestTableAuthority(
                 map: map, seatRecords: records, settings: settings,
+                clock: clock,
                 send: { [weak self] in self?.send($0) }
             )
             gameplaySink = { [weak g] in g?.receive($0) }
@@ -291,6 +415,7 @@ final class MatchSession {
         self.engine = engine
         self.seatMap = map
         inGame = true
+        startHeartbeat()
         engine.installOnlineTable(
             authority,
             host: host,
@@ -314,7 +439,7 @@ final class MatchSession {
 
     // MARK: Events (from the bridge, on the main actor)
 
-    func received(_ data: Data, fromName name: String) {
+    func received(_ data: Data, from id: String, name: String) {
         guard let message = NetMessage.decode(data) else {
             addLog("⚠️ \(data.count) undecodable bytes from \(name)")
             return
@@ -322,19 +447,27 @@ final class MatchSession {
         switch message {
         case .hello(let n):
             addLog("👋 \(n) is at the table")
-        case .claimHost(let id):
+        case .claimHost(let hostClaim):
             let hadDeal = iAmHost
-            registerHostClaim(id)
-            if hadDeal != iAmHost || hostID == id {
+            registerHostClaim(hostClaim)
+            if hadDeal != iAmHost || hostID == hostClaim {
                 addLog("👑 \(name) has the deal")
             }
-        case .ping(let id):
-            send(.pong(id: id))
-            addLog("📨 ping from \(name) — answered")
-        case .pong(let id):
-            if let sentAt = pendingPings.removeValue(forKey: id) {
-                let rtt = Date().timeIntervalSince(sentAt)
-                lastRTT = rtt
+        case .ping(let pingID, let t0):
+            // Echo their send time back with ours; they do the maths.
+            send(.pong(id: pingID, t0: t0, t1: Date().timeIntervalSince1970), to: id)
+            if !inGame { addLog("📨 ping from \(name) — answered") }
+        case .pong(let pingID, let t0, let t1):
+            guard let sentAt = pendingPings[pingID] else { return }
+            let t3 = Date()
+            let rtt = t3.timeIntervalSince(sentAt)
+            lastRTT = rtt
+            rttByPlayer[id] = rtt
+            // Only the host's clock is the table's clock.
+            if id == hostID {
+                clock.sample(t0: t0, t1: t1, t3: t3.timeIntervalSince1970)
+            }
+            if !inGame {
                 addLog(String(format: "🏓 pong from %@ — %.0f ms round trip", name, rtt * 1000))
             }
         case .tableConfig(let config):
@@ -342,7 +475,7 @@ final class MatchSession {
             onTableConfig?(config)
         case .roundStart, .roundEnd, .tableShuffled,
              .playerClaim, .claimResolved, .nertsCount, .nertsCalled,
-             .seatConverted:
+             .seatConverted, .pauseRequest, .pauseState:
             gameplaySink?(message)
         }
     }
@@ -391,6 +524,8 @@ final class MatchSession {
 
     func failed(_ message: String) {
         addLog("⚠️ \(message)")
+        heartbeat?.cancel()
+        heartbeat = nil
         ended = true
         if inGame {
             engine?.leaveOnlineMatch()
@@ -415,8 +550,9 @@ private final class MatchBridge: NSObject, GKMatchDelegate {
 
     func match(_ match: GKMatch, didReceive data: Data, fromRemotePlayer player: GKPlayer) {
         let name = player.displayName
+        let id = player.gamePlayerID
         Task { @MainActor [weak session] in
-            session?.received(data, fromName: name)
+            session?.received(data, from: id, name: name)
         }
     }
 

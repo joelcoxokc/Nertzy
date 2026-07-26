@@ -19,11 +19,50 @@ final class GameEngine {
     /// a fresh flip off the stock, or the whole waste after an undo.
     /// Cleared on the next pickup.
     var freshWasteIDs: Set<String> = []
-    private(set) var paused = false
+    /// Who froze the table (local seats, 0 = you) and when. Online this
+    /// only ever changes on the host's word, so every screen freezes and
+    /// thaws together. One optional rather than two fields kept in step:
+    /// resuming needs both halves or neither.
+    private(set) var pause: (by: Int, at: Date)?
+    var pausedBy: Int? { pause?.by }
+    var paused: Bool { pause != nil }
+    /// Can this device take the table off pause? Solo, always. Online,
+    /// whoever called it — plus the host, whose override is the way out
+    /// if the pauser's phone never comes back. The host enforces this
+    /// for real (`HostTableAuthority.requestPause`); this is the same
+    /// rule stated for the UI, so a button never lies about what it does.
+    var canResume: Bool { !isOnline || pausedBy == 0 || isOnlineHost }
     /// Debug: deal opponents a 2-card nerts pile so rounds end fast (-quickround).
     var debugTinyNerts = false
     /// Debug: the AI also plays your seat — living screenshots/demos (-demo).
     var debugDemo = false
+
+    /// Debug (-mockonline): play a real online table with nobody on the
+    /// other end. A genuine `HostTableAuthority` is installed with a
+    /// no-op wire, so the arbitration this exercises — the hold window,
+    /// tap ordering, pause broadcast, "too late to undo" — is the same
+    /// code the device runs. (Wearing the chrome over a solo table
+    /// instead would make the simulator disagree with the device in
+    /// exactly the places that are expensive to test.)
+    func debugPlayFakeOnlineTable() {
+        let map = SeatMap(total: playerCount, myGlobal: 0)
+        let records = (0..<playerCount).map { p in
+            SeatRecord(kind: p == 0 ? .me : .bot, name: seatName(p), emoji: seatEmoji(p))
+        }
+        let host = HostTableAuthority(
+            map: map, seatRecords: records, settings: settings,
+            hold: { 0.2 }, send: { _ in }
+        )
+        installOnlineTable(
+            host, host: true,
+            aiSeats: Array(1..<playerCount),
+            seatNames: (0..<playerCount).map(seatName),
+            seatEmojis: (0..<playerCount).map(seatEmoji),
+            settings: settings,
+            onLeave: {}
+        )
+        newMatch()
+    }
 
     // MARK: - The shared table (authority seam)
 
@@ -89,6 +128,7 @@ final class GameEngine {
         pendingBotSeats = []
         seatNames = []
         seatEmojis = []
+        pause = nil
         onlineFarewell = note
         phase = .menu
         let handler = onLeaveOnline
@@ -139,7 +179,6 @@ final class GameEngine {
     private var rng = SystemRandomNumberGenerator()
     private var bannerCounter = 0
     private var pulseCounter = 0
-    private var pausedAt: Date?
     private var loopTask: Task<Void, Never>?
     private var dealTask: Task<Void, Never>?
     private var onLeaveOnline: (() -> Void)?
@@ -223,8 +262,7 @@ final class GameEngine {
         table.beginRound()
         pulses = []
         shakeTokens = [:]
-        paused = false
-        pausedAt = nil
+        pause = nil
         undo = nil
         seatPulse = Array(repeating: 0, count: playerCount)
         aiCallAt = Array(repeating: nil, count: playerCount)
@@ -365,8 +403,7 @@ final class GameEngine {
         shakeTokens = [:]
         freshWasteIDs = []
         undo = nil
-        paused = false
-        pausedAt = nil
+        pause = nil
         dealing = false
         seatPulse = Array(repeating: 0, count: playerCount)
         aiCallAt = Array(repeating: nil, count: playerCount)
@@ -386,20 +423,38 @@ final class GameEngine {
         }
     }
 
+    /// Ask for a pause. Solo answers itself; online this goes to the
+    /// host, who declares it to the whole table — so the freeze lands
+    /// on every screen rather than just this one.
+    func requestPause(_ on: Bool) {
+        guard phase == .playing else { return }
+        guard on || canResume else { return }
+        table.requestPause(on, by: 0)
+    }
+
+    /// The app went to the background. Solo only: leaving your seat at a
+    /// live online table is not grounds for freezing everyone else's
+    /// game, and a one-sided freeze would just drift this device's
+    /// deadlines away from the host's. Named for the event so that the
+    /// policy is legible at the call site — `requestPause` is the door
+    /// for a player actually asking.
+    func appMovedToBackground() {
+        guard !isOnline else { return }
+        requestPause(true)
+    }
+
     /// Pause freezes the AI loop; resuming shifts every AI's schedule
     /// (and the table's deadlines) forward by the pause duration so
     /// nobody unleashes a burst of queued-up moves the moment play
     /// continues.
-    func setPaused(_ on: Bool) {
-        // An online table can't be frozen by one player.
-        guard phase == .playing, !isOnline else { return }
-        if on {
-            guard !paused else { return }
-            pausedAt = Date()
-            paused = true
+    private func applyPause(by seat: Int?) {
+        guard phase == .playing else { return }
+        if let seat {
+            guard pause == nil else { return }
+            pause = (by: seat, at: Date())
         } else {
-            guard paused else { return }
-            let delta = Date().timeIntervalSince(pausedAt ?? Date())
+            guard let held = pause else { return }
+            let delta = Date().timeIntervalSince(held.at)
             for i in aiNextMove.indices {
                 aiNextMove[i] = aiNextMove[i].addingTimeInterval(delta)
             }
@@ -408,18 +463,22 @@ final class GameEngine {
             }
             humanCallAt = humanCallAt?.addingTimeInterval(delta)
             table.shiftDeadlines(by: delta)
-            pausedAt = nil
-            paused = false
+            pause = nil
         }
     }
 
     func callNerts() {
         guard nertsReady, !paused else { return }
         Haptics.fanfare()
-        endRound(caller: 0)
+        endRound(caller: 0, calledAt: table.tableNow)
     }
 
-    private func endRound(caller: Int, note: String? = nil) {
+    /// `calledAt` is when the caller's pile emptied. Locally simulated
+    /// seats (you, and any bots this device runs) are stamped now — on
+    /// a host that IS the table's clock; a guest re-stamps its own call
+    /// in host time on the way out. nil = nobody called; the table is
+    /// settling for another reason.
+    private func endRound(caller: Int, calledAt: TimeInterval? = nil, note: String? = nil) {
         guard phase == .playing else { return }
         loopTask?.cancel()
         dealTask?.cancel()
@@ -427,7 +486,10 @@ final class GameEngine {
         // The authority settles the race, tallies, and reports back via
         // roundEnded. Demo/quickround rounds aren't genuine play — keep
         // them out of stats.
-        table.endRound(caller: caller, recordStats: !debugDemo && !debugTinyNerts, note: note)
+        table.endRound(
+            caller: caller, calledAt: calledAt,
+            recordStats: !debugDemo && !debugTinyNerts, note: note
+        )
     }
 
     // MARK: - The AI loop
@@ -474,7 +536,7 @@ final class GameEngine {
                 if aiCallAt[p] == nil {
                     aiCallAt[p] = now.addingTimeInterval(Double.random(in: params.callDelay, using: &rng))
                 } else if now >= aiCallAt[p]! {
-                    endRound(caller: p)
+                    endRound(caller: p, calledAt: table.tableNow)
                     return
                 }
             } else if aiCallAt[p] != nil {
@@ -608,7 +670,7 @@ final class GameEngine {
         case .foundation(let idx):
             // Your own play: instant commit at a table you're the
             // authority for; a short toss at a networked one.
-            guard unit.count == 1, table.playNow(first, from: source, at: idx, spot: spot) != nil else { return false }
+            guard unit.count == 1, table.playNow(first, from: source, at: idx, spot: spot) else { return false }
             removeCards(at: source, player: p)
         case .work(let w):
             guard (0..<4).contains(w) else { return false }
@@ -626,8 +688,14 @@ final class GameEngine {
     /// but the pile only updates when the card lands — anyone can take the
     /// spot in the meantime, and the loser's card bounces home.
     private func launchClaim(_ p: Int, source: MoveSource, pileIndex: Int?) -> Bool {
+        // A bot's "tap" is now, and its long flight is its handicap: a
+        // human who taps during it has the earlier stamp and takes the
+        // pile. Same rule as against another human, tilted your way.
         guard let unit = cards(at: source, player: p), unit.count == 1, let card = unit.first,
-              table.submitClaim(card, fromSeat: p, source: source, pileIndex: pileIndex, spot: nil, flight: 0.68)
+              table.submitClaim(
+                card, fromSeat: p, source: source, pileIndex: pileIndex, spot: nil,
+                tapAt: table.tableNow, flight: 0.68
+              )
         else { return false }
         removeCards(at: source, player: p)
         seatPulse[p] += 1
@@ -888,9 +956,9 @@ extension GameEngine: TableAuthorityDelegate {
         startRound()
     }
 
-    func remoteNertsCall(seat: Int) {
+    func remoteNertsCall(seat: Int, at tapAt: TimeInterval) {
         guard isOnline else { return }
-        endRound(caller: seat)
+        endRound(caller: seat, calledAt: tapAt)
     }
 
     func seatBecameBot(seat: Int) {
@@ -902,6 +970,10 @@ extension GameEngine: TableAuthorityDelegate {
 
     func tableClosed(reason: String) {
         leaveOnlineMatch(note: reason)
+    }
+
+    func tablePauseChanged(by seat: Int?) {
+        applyPause(by: seat)
     }
 }
 

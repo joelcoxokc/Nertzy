@@ -77,8 +77,13 @@ struct SeatMap {
 /// rules exactly like solo (bots included), and this wrapper sits on
 /// its delegate line — every landing, bounce, shuffle, and settlement
 /// is forwarded to the local engine AND broadcast to the guests.
-/// Remote plays arrive as messages and enter the same claim pipeline
-/// bots use; "first card down" is decided by landing at this table.
+///
+/// Every human play enters the same claim pipeline the bots use, the
+/// host's own included: the host has no wire to wait on, so committing
+/// instantly would hand it every contested pile. Instead each claim is
+/// held briefly and the pile goes to the EARLIEST TAP — the host pays
+/// the same small settling beat as everyone else, which is the price
+/// of the table being fair.
 @MainActor
 @Observable
 final class HostTableAuthority: TableAuthority, TableAuthorityDelegate {
@@ -89,9 +94,25 @@ final class HostTableAuthority: TableAuthority, TableAuthorityDelegate {
     @ObservationIgnored private let map: SeatMap
     @ObservationIgnored private let seatRecords: [SeatRecord]
     @ObservationIgnored private let matchSettings: GameSettings
+    @ObservationIgnored private let hold: () -> TimeInterval
     @ObservationIgnored private let sendMessage: (NetMessage) -> Void
     @ObservationIgnored private var matchID = UUID()
     @ObservationIgnored private var recordRounds = true
+    /// Who is holding the table frozen (local seats), or nil.
+    @ObservationIgnored private var pausedBy: Int?
+    /// Is there a live round to freeze? A guest's pause can arrive just
+    /// after the round settled here — accepting it then would start
+    /// queueing messages against a table that isn't running.
+    @ObservationIgnored private var roundLive = false
+    /// The best NERTS call heard so far, while the window is open.
+    @ObservationIgnored private var pendingCall: (seat: Int, tapAt: TimeInterval, note: String?)?
+    /// Gameplay that arrived while the table was frozen. A player who
+    /// hadn't heard about the pause yet still threw cards, and those
+    /// cards are sitting in the air on their screen — holding the
+    /// messages resolves them honestly on resume instead of stranding
+    /// them. Bounded so a pause nobody lifts can't grow without limit.
+    @ObservationIgnored private var held: [NetMessage] = []
+    @ObservationIgnored private var autoResume: Task<Void, Never>?
     /// Last self-reported nerts counts for seats living on other
     /// devices (local-indexed) — badge data and the round-end tally.
     private(set) var remoteNerts: [Int?]
@@ -103,17 +124,23 @@ final class HostTableAuthority: TableAuthority, TableAuthorityDelegate {
         map: SeatMap,
         seatRecords: [SeatRecord],
         settings: GameSettings,
+        hold: @escaping () -> TimeInterval,
         send: @escaping (NetMessage) -> Void
     ) {
         self.map = map
         self.seatRecords = seatRecords
         self.matchSettings = settings
+        self.hold = hold
         self.sendMessage = send
         self.remoteNerts = Array(repeating: nil, count: map.total)
         inner.delegate = self
     }
 
     // MARK: Forwarded table state
+
+    /// This device arbitrates, so its clock IS the table's clock —
+    /// every guest measures its offset against exactly this.
+    var tableNow: TimeInterval { inner.tableNow }
 
     var foundations: [FoundationPile] { inner.foundations }
     var flying: [FlyingCard] { inner.flying }
@@ -133,18 +160,71 @@ final class HostTableAuthority: TableAuthority, TableAuthorityDelegate {
 
     func beginRound() {
         remoteNerts = Array(repeating: nil, count: map.total)
+        setPause(by: nil, replayHeld: false)
+        pendingCall = nil
+        roundLive = true
         inner.beginRound()
         sendMessage(.roundStart(matchID: matchID, round: inner.roundNumber))
     }
 
-    func endRound(caller: Int, recordStats: Bool, note: String?) {
+    /// NERTS is the last race of the round, and it was the one place
+    /// arrival order still decided things — the host's own call landed
+    /// instantly while a guest's cost a one-way trip. So a call opens
+    /// the same brief window a contested pile gets: every call that
+    /// arrives inside it competes, and the EARLIEST emptied pile takes
+    /// it. The window is measured from the first call's own stamp, which
+    /// is always at least as long as the wait correctness needs.
+    func endRound(caller: Int, calledAt: TimeInterval?, recordStats: Bool, note: String?) {
         recordRounds = recordStats
-        // The inner table must not write the record book — this wrapper
-        // records with the multiplayer seat list instead.
-        inner.endRound(caller: caller, recordStats: false, note: note)
+        // A round can end while frozen — a player dropping off settles
+        // it from outside the tick. Thaw first so nothing is left held
+        // against a round that no longer exists.
+        roundLive = false
+        setPause(by: nil, replayHeld: false)
+
+        guard let calledAt, caller >= 0 else {
+            // Not a race — a player left, or the table settled itself.
+            // A call already in hand outranks a departure: somebody
+            // genuinely went out, and that's the truer story.
+            if pendingCall != nil { settlePendingCall(); return }
+            settle(caller: caller, note: note)
+            return
+        }
+
+        if let existing = pendingCall {
+            // Somebody beat them to it — unless they emptied first.
+            if calledAt < existing.tapAt {
+                pendingCall = (seat: caller, tapAt: calledAt, note: note)
+            }
+            return          // a settlement is already on the clock
+        }
+        pendingCall = (seat: caller, tapAt: calledAt, note: note)
+        let deadline = calledAt + hold()
+        Task { [weak self] in
+            let wait = deadline - Date().timeIntervalSince1970
+            if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+            self?.settlePendingCall()
+        }
     }
 
-    func abandonRound() { inner.abandonRound() }
+    private func settlePendingCall() {
+        guard let call = pendingCall else { return }
+        pendingCall = nil
+        settle(caller: call.seat, note: call.note)
+    }
+
+    /// The inner table must not write the record book — this wrapper
+    /// records with the multiplayer seat list instead.
+    private func settle(caller: Int, note: String?) {
+        inner.endRound(caller: caller, calledAt: nil, recordStats: false, note: note)
+    }
+
+    func abandonRound() {
+        roundLive = false
+        pendingCall = nil
+        setPause(by: nil, replayHeld: false)
+        inner.abandonRound()
+    }
 
     func convertSeatToBot(seat: Int) {
         guard !convertedSeats.contains(seat) else { return }
@@ -155,18 +235,19 @@ final class HostTableAuthority: TableAuthority, TableAuthorityDelegate {
 
     // MARK: Plays
 
-    func playNow(_ card: Card, from source: MoveSource, at index: Int?, spot: CGPoint?) -> Int? {
-        let wasNewPile = index == nil
-        guard let pileID = inner.playNow(card, from: source, at: index, spot: spot) else { return nil }
-        broadcastResolution(
-            card: card, fromSeat: 0, source: source,
-            landed: true, pileID: pileID, newPile: wasNewPile, bounceSpot: nil
+    /// The host's own play is a claim like anyone else's — held for the
+    /// arbitration window so a guest who tapped a hair earlier can still
+    /// take the pile. The card leaves the hand immediately either way;
+    /// only the rare bounce betrays that the host waited its turn.
+    func playNow(_ card: Card, from source: MoveSource, at index: Int?, spot: CGPoint?) -> Bool {
+        inner.submitClaim(
+            card, fromSeat: 0, source: source, pileIndex: index, spot: spot,
+            tapAt: tableNow, flight: hold()
         )
-        return pileID
     }
 
-    func submitClaim(_ card: Card, fromSeat: Int, source: MoveSource, pileIndex: Int?, spot: CGPoint?, flight: TimeInterval) -> Bool {
-        inner.submitClaim(card, fromSeat: fromSeat, source: source, pileIndex: pileIndex, spot: spot, flight: flight)
+    func submitClaim(_ card: Card, fromSeat: Int, source: MoveSource, pileIndex: Int?, spot: CGPoint?, tapAt: TimeInterval, flight: TimeInterval) -> Bool {
+        inner.submitClaim(card, fromSeat: fromSeat, source: source, pileIndex: pileIndex, spot: spot, tapAt: tapAt, flight: flight)
     }
 
     func undoFoundationPlay(pileID: Int, cardID: String, wasNewPile: Bool) -> Bool {
@@ -174,7 +255,50 @@ final class HostTableAuthority: TableAuthority, TableAuthorityDelegate {
     }
 
     func pileAccepts(_ card: Card, pileIndex: Int) -> Bool {
-        pileIndex < inner.foundations.count && inner.foundations[pileIndex].accepts(card)
+        inner.pileAccepts(card, pileIndex: pileIndex)
+    }
+
+    // MARK: Pause — anyone may ask, this device decides
+
+    /// The one enforcement point for who may freeze and thaw the table.
+    /// `GameEngine.canResume` mirrors this rule for the UI, but a guest
+    /// asking for something it isn't owed is refused here.
+    func requestPause(_ on: Bool, by seat: Int) {
+        if on {
+            guard roundLive, pausedBy == nil else { return }
+            setPause(by: seat)
+        } else {
+            // Whoever called the pause lifts it. The host can always
+            // override, so a phone that died mid-pause can't strand
+            // everyone else at a frozen table.
+            guard let holder = pausedBy, seat == holder || seat == 0 else { return }
+            setPause(by: nil)
+        }
+    }
+
+    /// `replayHeld` is false at a round boundary or a dissolved table:
+    /// there's nothing left for the queued messages to act on.
+    private func setPause(by seat: Int?, replayHeld: Bool = true) {
+        autoResume?.cancel()
+        autoResume = nil
+        let queued = replayHeld ? held : []
+        held = []
+        guard seat != pausedBy else { return }
+        pausedBy = seat
+        sendMessage(.pauseState(by: seat.map { map.global($0) }))
+        delegate?.tablePauseChanged(by: seat)
+        if seat != nil {
+            // Nobody's night ends because someone walked away mid-pause.
+            autoResume = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(120))
+                guard !Task.isCancelled else { return }
+                self?.requestPause(false, by: 0)
+            }
+        } else {
+            // Play is live again before these land, so they enter the
+            // pipeline exactly as they would have.
+            for message in queued { handle(message) }
+        }
     }
 
     // MARK: Badges
@@ -197,6 +321,19 @@ final class HostTableAuthority: TableAuthority, TableAuthorityDelegate {
     // MARK: Wire intake
 
     func receive(_ message: NetMessage) {
+        // Pause traffic is never held — it's how a table gets unstuck.
+        if case .pauseRequest(let globalSeat, let on) = message {
+            requestPause(on, by: map.local(globalSeat))
+            return
+        }
+        guard pausedBy == nil else {
+            if held.count < 256 { held.append(message) }
+            return
+        }
+        handle(message)
+    }
+
+    private func handle(_ message: NetMessage) {
         switch message {
         case .playerClaim(let claim):
             let card = map.localCard(claim.card)
@@ -206,9 +343,14 @@ final class HostTableAuthority: TableAuthority, TableAuthorityDelegate {
             }
             // A targeted pile that's already gone can never land.
             let doomed = claim.pileID != nil && index == nil
+            // The tap already happened; the wire time it spent getting
+            // here counts against its hold, not against the player.
+            // (A claim with no stamp — an older build — is treated as
+            // tapped on arrival, the way it used to be.)
+            let tapAt = claim.tapAt ?? tableNow
             let accepted = !doomed && inner.submitClaim(
                 card, fromSeat: fromSeat, source: claim.source,
-                pileIndex: index, spot: claim.spot, flight: 0.3
+                pileIndex: index, spot: claim.spot, tapAt: tapAt, flight: hold()
             )
             if !accepted {
                 // Illegal at the door — answer anyway so the thrower's
@@ -219,8 +361,11 @@ final class HostTableAuthority: TableAuthority, TableAuthorityDelegate {
                     newPile: claim.pileID == nil, spot: claim.spot, tilt: 0
                 )))
             }
-        case .nertsCalled(let globalSeat):
-            delegate?.remoteNertsCall(seat: map.local(globalSeat))
+        case .nertsCalled(let globalSeat, let tapAt):
+            delegate?.remoteNertsCall(
+                seat: map.local(globalSeat),
+                at: tapAt ?? tableNow
+            )
         case .nertsCount(let globalSeat, let count):
             let local = map.local(globalSeat)
             if local != 0, local < remoteNerts.count, !convertedSeats.contains(local) {
@@ -292,10 +437,13 @@ final class HostTableAuthority: TableAuthority, TableAuthorityDelegate {
     }
 
     // Inner tables never emit these; conformance completeness.
+    // (Pause never reaches the inner table — this wrapper is the one
+    // that decides, so it answers requests itself.)
     func roundStarted(round: Int) {}
-    func remoteNertsCall(seat: Int) {}
+    func remoteNertsCall(seat: Int, at tapAt: TimeInterval) {}
     func seatBecameBot(seat: Int) {}
     func tableClosed(reason: String) {}
+    func tablePauseChanged(by seat: Int?) {}
 
     private func broadcastResolution(
         card: Card, fromSeat: Int, source: MoveSource,
@@ -337,6 +485,10 @@ final class GuestTableAuthority: TableAuthority {
     private(set) var summary: RoundSummary?
     var maxFoundations: Int { 4 * map.total }
 
+    /// My best reading of the host's clock — the only place this device
+    /// converts its own time into the table's.
+    var tableNow: TimeInterval { clock.now() }
+
     /// Reported badge counts for every seat that isn't mine (bots and
     /// humans alike — they all live on other devices).
     private(set) var remoteNerts: [Int?]
@@ -344,6 +496,9 @@ final class GuestTableAuthority: TableAuthority {
     @ObservationIgnored private let map: SeatMap
     @ObservationIgnored private let seatRecords: [SeatRecord]
     @ObservationIgnored private let matchSettings: GameSettings
+    /// The host's clock, as best this device can read it — every play
+    /// is stamped with it so the host can rank taps, not arrivals.
+    @ObservationIgnored private let clock: TableClock
     @ObservationIgnored private let sendMessage: (NetMessage) -> Void
     @ObservationIgnored private var matchID: UUID?
     @ObservationIgnored private var outcomes: [String: WireResolution] = [:]
@@ -359,11 +514,13 @@ final class GuestTableAuthority: TableAuthority {
         map: SeatMap,
         seatRecords: [SeatRecord],
         settings: GameSettings,
+        clock: TableClock,
         send: @escaping (NetMessage) -> Void
     ) {
         self.map = map
         self.seatRecords = seatRecords
         self.matchSettings = settings
+        self.clock = clock
         self.sendMessage = send
         self.remoteNerts = Array(repeating: nil, count: map.total)
         self.scores = Array(repeating: 0, count: map.total)
@@ -385,11 +542,17 @@ final class GuestTableAuthority: TableAuthority {
         awaitingRoundEnd = false
     }
 
-    func endRound(caller: Int, recordStats: Bool, note: String?) {
-        // My nerts call — the host settles and answers with roundEnd.
+    /// My nerts call — the host settles and answers with roundEnd.
+    /// `calledAt` already arrived in the host's clock (the engine stamps
+    /// through `tableNow`), so it races on the moment my pile emptied
+    /// rather than on when the message lands.
+    func endRound(caller: Int, calledAt: TimeInterval?, recordStats: Bool, note: String?) {
         guard roundActive, !awaitingRoundEnd else { return }
         awaitingRoundEnd = true
-        sendMessage(.nertsCalled(seat: map.global(caller)))
+        sendMessage(.nertsCalled(
+            seat: map.global(caller),
+            tapAt: clock.synced ? calledAt : nil
+        ))
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(8))
             guard let self, self.awaitingRoundEnd, self.roundActive else { return }
@@ -403,32 +566,37 @@ final class GuestTableAuthority: TableAuthority {
 
     // MARK: Plays
 
-    func playNow(_ card: Card, from source: MoveSource, at index: Int?, spot: CGPoint?) -> Int? {
-        guard roundActive else { return nil }
+    func playNow(_ card: Card, from source: MoveSource, at index: Int?, spot: CGPoint?) -> Bool {
+        guard roundActive else { return false }
         let pileID: Int?
         if let index {
-            guard pileAccepts(card, pileIndex: index) else { return nil }
+            guard pileAccepts(card, pileIndex: index) else { return false }
             pileID = foundations[index].id
         } else {
-            guard card.rank == 1, foundations.count < maxFoundations else { return nil }
+            guard card.rank == 1, foundations.count < maxFoundations else { return false }
             pileID = nil
         }
+        // Stamp the moment of the tap in the host's clock, before any
+        // of the wire's time is spent — that stamp is what wins races.
+        let tapAt = tableNow
         // Born landed: the card slides straight from your hand toward
         // the pile while the claim races to the host.
         flying.append(FlyingCard(
             card: card, fromSeat: 0, source: source,
             pileID: pileID,
             spot: pileID == nil ? (spot ?? CGPoint(x: 0.5, y: 0.4)) : nil,
-            resolveAt: Date().addingTimeInterval(0.35),
-            landed: true
+            tapAt: tapAt,
+            resolveAt: Date().addingTimeInterval(0.35)
         ))
         sendMessage(.playerClaim(WireClaim(
-            card: map.wireCard(card), source: source, pileID: pileID, spot: spot
+            card: map.wireCard(card), source: source,
+            pileID: pileID, spot: spot,
+            tapAt: clock.synced ? tapAt : nil
         )))
-        return pileID ?? -1
+        return true
     }
 
-    func submitClaim(_ card: Card, fromSeat: Int, source: MoveSource, pileIndex: Int?, spot: CGPoint?, flight: TimeInterval) -> Bool {
+    func submitClaim(_ card: Card, fromSeat: Int, source: MoveSource, pileIndex: Int?, spot: CGPoint?, tapAt: TimeInterval, flight: TimeInterval) -> Bool {
         false   // guests simulate no bot seats
     }
 
@@ -438,20 +606,20 @@ final class GuestTableAuthority: TableAuthority {
 
     /// The replica's pile, plus my own tosses still in the air — a run
     /// chains onto them immediately; the host bounces the chain if the
-    /// base loses its race.
+    /// base loses its race. Tosses the host has already refused are
+    /// left out: their cards are on the way home.
     func pileAccepts(_ card: Card, pileIndex: Int) -> Bool {
         guard pileIndex < foundations.count else { return false }
-        let pile = foundations[pileIndex]
-        var top = pile.cards.last
-        var count = pile.cards.count
-        for f in flying where f.fromSeat == 0 && !f.bouncing && f.pileID == pile.id {
-            // Skip tosses already known to have bounced.
-            if let res = outcomes[f.id], !res.landed { continue }
-            top = f.card
-            count += 1
-        }
-        guard count < FoundationPile.completeCount, let top else { return false }
-        return card.suit == top.suit && card.rank == top.rank + 1
+        return foundations[pileIndex].accepts(
+            card, projecting: flying, seat: 0,
+            skipping: { self.outcomes[$0.id].map { !$0.landed } ?? false }
+        )
+    }
+
+    // MARK: Pause — ask the host, act on the answer
+
+    func requestPause(_ on: Bool, by seat: Int) {
+        sendMessage(.pauseRequest(seat: map.global(seat), on: on))
     }
 
     // MARK: Badges
@@ -527,6 +695,8 @@ final class GuestTableAuthority: TableAuthority {
             delegate?.tableShuffleCalled()
         case .seatConverted(let globalSeat):
             delegate?.seatBecameBot(seat: map.local(globalSeat))
+        case .pauseState(let globalSeat):
+            delegate?.tablePauseChanged(by: globalSeat.map { map.local($0) })
         default:
             break
         }
@@ -547,10 +717,13 @@ final class GuestTableAuthority: TableAuthority {
             // Someone else's play: give it a short flight, outcome known.
             outcomes[card.id] = res
             resolutionOrder.append(card.id)
+            // The replica settles strictly in host-broadcast order, so
+            // this stamp is only ever cosmetic bookkeeping.
             flying.append(FlyingCard(
                 card: card, fromSeat: fromLocal, source: res.source,
                 pileID: res.newPile ? nil : res.pileID,
                 spot: res.newPile ? res.spot : nil,
+                tapAt: tableNow,
                 resolveAt: Date().addingTimeInterval(0.3)
             ))
             let id = card.id
