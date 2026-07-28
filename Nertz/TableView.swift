@@ -338,12 +338,23 @@ struct TableView: View {
     /// that actually takes the cards.
     private func dropTarget(_ layout: TableLayout, translation: CGSize, predicted: CGSize) -> DropTarget? {
         guard let d = drag, let lead = d.unit.first, let base = d.bases[lead.id] else { return nil }
-        let point = base.adding(translation)
-
-        // Released next to where it was picked up = putting it back.
-        guard point.distance(to: base) > layout.cardW * 0.75 else { return nil }
-
+        let release = base.adding(translation)
         let thrown = thrownPoint(from: base, translation: translation, predicted: predicted, layout: layout)
+
+        // Released next to where it was picked up = putting it back. A flick
+        // is judged by where it was headed, not where the finger stopped:
+        // thrown hard enough, a card leaves under a thumb that barely moved.
+        guard max(release.distance(to: base), thrown.distance(to: base)) > layout.cardW * 0.75 else { return nil }
+
+        // An empty work slot is a bare outline at the very top of the row with
+        // no fan hanging below it to catch anything. Let it claim the felt
+        // just above it, so a card flicked at the gap drops into the gap
+        // instead of sailing on and being read as a throw at the table.
+        if let wi = layout.workIndex(at: thrown, reach: 1.5),
+           engine.boards.first?.work[wi].isEmpty == true,
+           engine.canDrop(d.unit, on: .work(wi)) {
+            return .work(wi)
+        }
 
         // Anywhere on the open felt (grown by a card, kept clear of the work
         // row) — a single card finds its own pile out there. No taker on
@@ -382,9 +393,37 @@ struct TableView: View {
         if let best, best.dist < layout.cardW * 3.0 {
             return best.target
         }
+        // Thrown clear over everything: walk back down the flight and land on
+        // the last pile the card crossed. Overshooting the row by a column or
+        // two is a hard flick, not a change of mind — and a slow drag has no
+        // flight to walk, so this only ever rescues a throw.
+        if let target = crossedTarget(from: thrown, back: release, layout: layout) {
+            return target
+        }
         // Nothing in reach takes it. Report the pile actually under the
         // drop so the shake says "doesn't fit" instead of silently snapping back.
         if let hovered { return .work(hovered) }
+        return nil
+    }
+
+    /// Retracing a throw from where it came down back to where it left the
+    /// finger: the first work pile along the way that takes the cards.
+    private func crossedTarget(from thrown: CGPoint, back release: CGPoint, layout: TableLayout) -> DropTarget? {
+        guard let d = drag else { return nil }
+        let flight = thrown.distance(to: release)
+        guard flight > layout.cardW * 0.5 else { return nil }
+        let steps = Int(flight / (layout.cardW * 0.4))
+        for s in 1...max(steps, 1) {
+            let t = CGFloat(s) / CGFloat(max(steps, 1))
+            let p = CGPoint(
+                x: thrown.x + (release.x - thrown.x) * t,
+                y: thrown.y + (release.y - thrown.y) * t
+            )
+            if let wi = layout.workIndex(at: p, reach: 1.5),
+               engine.canDrop(d.unit, on: .work(wi)) {
+                return .work(wi)
+            }
+        }
         return nil
     }
 

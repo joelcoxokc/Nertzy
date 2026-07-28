@@ -141,8 +141,12 @@ struct TableLayout {
 
     // MARK: Hit testing
 
-    func workIndex(at p: CGPoint) -> Int? {
-        guard p.y > workTopY - cardH * 1.1 else { return nil }
+    /// Which column a point falls in. `reach` is how far above the row still
+    /// counts, in card heights — a stacked pile is a target three cards tall
+    /// with a fan hanging into the throw, so the row's own top edge is enough;
+    /// an empty slot is one bare card and wants the felt just above it too.
+    func workIndex(at p: CGPoint, reach: CGFloat = 1.1) -> Int? {
+        guard p.y > workTopY - cardH * reach else { return nil }
         var best: (index: Int, dist: CGFloat)?
         for i in 0..<4 {
             let d = abs(workBase(i).x - p.x)
