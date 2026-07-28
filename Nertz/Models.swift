@@ -219,7 +219,7 @@ enum Difficulty: String, CaseIterable, Identifiable, Codable {
         case .classic:
             return DifficultyParams(interval: 2.2...4.0, skipChance: 0.14, callDelay: 0.8...1.4, smart: true, reaction: 1.0)
         case .frantic:
-            return DifficultyParams(interval: 1.1...2.1, skipChance: 0.05, callDelay: 0.5...0.9, smart: true, reaction: 0.6)
+            return DifficultyParams(interval: 1.35...2.5, skipChance: 0.08, callDelay: 0.5...0.9, smart: true, reaction: 0.7)
         }
     }
 }
